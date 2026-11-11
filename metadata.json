@@ -1,0 +1,6 @@
+{
+  "name": "KLARENCY",
+  "description": "Shared Financial Management, Contribution Tracking and Accountability Platform with Malawi Kwacha (MWK) support, payment commitments, countdowns, and verification.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

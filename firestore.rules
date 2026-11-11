@@ -1,0 +1,185 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Admin helper
+    function isSuperAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'cchilongo88@gmail.com' ||
+        request.auth.token.email == 'admin@klarency.mw' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Check if user is a member of the group
+    function isGroupMember(groupId) {
+      return isSignedIn() && (
+        isSuperAdmin() ||
+        exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)) ||
+        get(/databases/$(database)/documents/groups/$(groupId)).data.adminId == request.auth.uid
+      );
+    }
+
+    // Check if user is group admin or treasurer
+    function isGroupManager(groupId) {
+      return isSignedIn() && (
+        isSuperAdmin() ||
+        get(/databases/$(database)/documents/groups/$(groupId)).data.adminId == request.auth.uid ||
+        get(/databases/$(database)/documents/groups/$(groupId)).data.treasurerId == request.auth.uid ||
+        (
+          exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.roleInGroup in ['admin', 'treasurer']
+        )
+      );
+    }
+
+    // Validation helpers
+    function isValidUser(data) {
+      return data.keys().hasAll(['id', 'name', 'email', 'role', 'createdAt']) &&
+             data.id is string && data.id.size() <= 128 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.email is string && data.email.size() <= 100 &&
+             data.role in ['super_admin', 'group_admin', 'treasurer', 'member'];
+    }
+
+    function isValidGroup(data) {
+      return data.keys().hasAll(['id', 'name', 'category', 'adminId', 'defaultCurrency', 'joinCode', 'createdAt']) &&
+             data.id is string && data.id.size() <= 128 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.category in ['house', 'hostel', 'workplace', 'community', 'church', 'project'] &&
+             data.adminId is string && data.adminId.size() <= 128 &&
+             data.defaultCurrency is string && data.defaultCurrency.size() <= 10;
+    }
+
+    function isValidPayment(data) {
+      return data.keys().hasAll(['id', 'assignmentId', 'groupId', 'memberId', 'amountReceived', 'paymentDate', 'paymentMethod', 'transactionReference', 'collectorId', 'verificationStatus', 'createdAt']) &&
+             data.amountReceived is number && data.amountReceived > 0 &&
+             data.paymentMethod in ['airtel_money', 'tnm_mpamba', 'bank_transfer', 'cash', 'other'] &&
+             data.transactionReference is string && data.transactionReference.size() > 0 && data.transactionReference.size() <= 100 &&
+             data.verificationStatus in ['verified', 'pending_verification', 'rejected'];
+    }
+
+    function isValidCommitment(data) {
+      return data.keys().hasAll(['id', 'assignmentId', 'memberId', 'groupId', 'originalOutstandingAmount', 'currentOutstandingAmount', 'commitmentDate', 'promisedDate', 'collectorId', 'status']) &&
+             data.originalOutstandingAmount is number &&
+             data.currentOutstandingAmount is number &&
+             data.status in ['active', 'due_soon', 'due_today', 'completed', 'overdue', 'extension_requested', 'revised'];
+    }
+
+    function isValidExpense(data) {
+      return data.keys().hasAll(['id', 'groupId', 'name', 'category', 'amount', 'date', 'responsiblePersonId', 'status', 'createdAt']) &&
+             data.amount is number && data.amount > 0 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
+             data.status in ['approved', 'pending_approval', 'rejected'];
+    }
+
+    // User collection
+    match /users/{userId} {
+      allow get: if isSignedIn() && (isOwner(userId) || isSuperAdmin());
+      allow list: if isSuperAdmin();
+      allow create: if isSignedIn() && (isOwner(userId) || isSuperAdmin()) && isValidUser(incoming());
+      allow update: if isSignedIn() && (isOwner(userId) || isSuperAdmin()) && isValidUser(incoming()) &&
+                    incoming().id == existing().id;
+      allow delete: if isSuperAdmin();
+
+      match /notifications/{notificationId} {
+        allow get, list: if isOwner(userId) || isSuperAdmin();
+        allow create: if isSignedIn();
+        allow update: if isOwner(userId) || isSuperAdmin();
+        allow delete: if isOwner(userId) || isSuperAdmin();
+      }
+    }
+
+    // Groups collection
+    match /groups/{groupId} {
+      allow get: if isGroupMember(groupId) || isSuperAdmin();
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidGroup(incoming());
+      allow update: if isGroupManager(groupId) && isValidGroup(incoming()) && incoming().id == existing().id;
+      allow delete: if isSuperAdmin() || (isSignedIn() && existing().adminId == request.auth.uid);
+
+      match /members/{memberId} {
+        allow get, list: if isGroupMember(groupId);
+        allow create, update: if isGroupManager(groupId) || (isSignedIn() && request.auth.uid == memberId);
+        allow delete: if isGroupManager(groupId);
+      }
+
+      match /contributions/{contributionId} {
+        allow get, list: if isGroupMember(groupId);
+        allow create, update, delete: if isGroupManager(groupId);
+      }
+
+      match /assignments/{assignmentId} {
+        allow get, list: if isGroupMember(groupId);
+        allow create, update: if isGroupManager(groupId);
+        allow delete: if isGroupManager(groupId);
+      }
+
+      match /payments/{paymentId} {
+        allow get, list: if isGroupMember(groupId);
+        allow create: if isGroupMember(groupId) && isValidPayment(incoming());
+        allow update: if isGroupManager(groupId) && isValidPayment(incoming()) && incoming().id == existing().id;
+        allow delete: if isSuperAdmin();
+      }
+
+      match /commitments/{commitmentId} {
+        allow get, list: if isGroupMember(groupId);
+        allow create: if isGroupMember(groupId) && isValidCommitment(incoming());
+        allow update: if isGroupMember(groupId) && isValidCommitment(incoming()) && incoming().id == existing().id;
+        allow delete: if isGroupManager(groupId);
+      }
+
+      match /commitmentEvents/{eventId} {
+        allow get, list: if isGroupMember(groupId);
+        allow create: if isGroupMember(groupId);
+        allow update, delete: if false; // Immutable audit log
+      }
+
+      match /expenses/{expenseId} {
+        allow get, list: if isGroupMember(groupId);
+        allow create: if isGroupMember(groupId) && isValidExpense(incoming());
+        allow update: if isGroupManager(groupId) && isValidExpense(incoming());
+        allow delete: if isGroupManager(groupId);
+      }
+
+      match /disputes/{disputeId} {
+        allow get, list: if isGroupMember(groupId);
+        allow create: if isGroupMember(groupId);
+        allow update: if isGroupManager(groupId) || (isGroupMember(groupId) && existing().memberId == request.auth.uid);
+        allow delete: if false; // Immutable audit history
+      }
+
+      match /auditLogs/{logId} {
+        allow get, list: if isGroupMember(groupId);
+        allow create: if isGroupMember(groupId);
+        allow update, delete: if false; // Immutable audit trail
+      }
+    }
+  }
+}

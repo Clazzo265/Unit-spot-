@@ -1,0 +1,281 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Registered user profile with contact details and role",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 100 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "role": { "type": "string", "enum": ["super_admin", "group_admin", "treasurer", "member"] },
+        "roomNumber": { "type": "string", "maxLength": 50 },
+        "avatarUrl": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "email", "role", "createdAt"]
+    },
+    "Group": {
+      "title": "Group",
+      "description": "Financial circle such as a shared house, student hostel, workplace team or community group",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 500 },
+        "category": { "type": "string", "enum": ["house", "hostel", "workplace", "community", "church", "project"] },
+        "adminId": { "type": "string", "maxLength": 128 },
+        "treasurerId": { "type": "string", "maxLength": 128 },
+        "defaultCurrency": { "type": "string", "maxLength": 10 },
+        "paymentRules": { "type": "string", "maxLength": 1000 },
+        "joinCode": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "memberCount": { "type": "number" }
+      },
+      "required": ["id", "name", "category", "adminId", "defaultCurrency", "joinCode", "createdAt"]
+    },
+    "GroupMember": {
+      "title": "GroupMember",
+      "description": "Membership link linking users to financial groups with group-specific roles",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "groupId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "roleInGroup": { "type": "string", "enum": ["admin", "treasurer", "member"] },
+        "joinedAt": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["active", "suspended"] }
+      },
+      "required": ["id", "groupId", "userId", "roleInGroup", "joinedAt", "status"]
+    },
+    "Contribution": {
+      "title": "Contribution",
+      "description": "A scheduled common obligation such as electricity, water bill, or rent",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "groupId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 120 },
+        "category": { "type": "string", "enum": ["electricity", "water", "rent", "internet", "security", "waste", "groceries", "maintenance", "other"] },
+        "month": { "type": "number" },
+        "year": { "type": "number" },
+        "totalTargetAmount": { "type": "number" },
+        "deadline": { "type": "string", "format": "date-time" },
+        "description": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["active", "closed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "groupId", "title", "category", "totalTargetAmount", "deadline", "status", "createdAt"]
+    },
+    "ContributionAssignment": {
+      "title": "ContributionAssignment",
+      "description": "Individual assigned share for a specific group member",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "contributionId": { "type": "string", "maxLength": 128 },
+        "groupId": { "type": "string", "maxLength": 128 },
+        "memberId": { "type": "string", "maxLength": 128 },
+        "assignedAmount": { "type": "number" },
+        "assignedDate": { "type": "string", "format": "date-time" },
+        "deadline": { "type": "string", "format": "date-time" },
+        "notes": { "type": "string", "maxLength": 300 },
+        "status": { "type": "string", "enum": ["unpaid", "partially_paid", "pending_verification", "verified", "rejected", "overdue", "fully_settled"] }
+      },
+      "required": ["id", "contributionId", "groupId", "memberId", "assignedAmount", "assignedDate", "deadline", "status"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Recorded payment transaction with transaction code, channel and verification state",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "assignmentId": { "type": "string", "maxLength": 128 },
+        "contributionId": { "type": "string", "maxLength": 128 },
+        "groupId": { "type": "string", "maxLength": 128 },
+        "memberId": { "type": "string", "maxLength": 128 },
+        "amountReceived": { "type": "number" },
+        "paymentDate": { "type": "string", "format": "date-time" },
+        "paymentMethod": { "type": "string", "enum": ["airtel_money", "tnm_mpamba", "bank_transfer", "cash", "other"] },
+        "transactionReference": { "type": "string", "maxLength": 100 },
+        "collectorId": { "type": "string", "maxLength": 128 },
+        "verificationStatus": { "type": "string", "enum": ["verified", "pending_verification", "rejected"] },
+        "rejectionReason": { "type": "string", "maxLength": 300 },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "verifiedBy": { "type": "string", "maxLength": 128 },
+        "receiptNote": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "assignmentId", "groupId", "memberId", "amountReceived", "paymentDate", "paymentMethod", "transactionReference", "collectorId", "verificationStatus", "createdAt"]
+    },
+    "PaymentCommitment": {
+      "title": "PaymentCommitment",
+      "description": "Recorded promise by a member to settle an outstanding balance by a deadline with live countdown",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "assignmentId": { "type": "string", "maxLength": 128 },
+        "memberId": { "type": "string", "maxLength": 128 },
+        "groupId": { "type": "string", "maxLength": 128 },
+        "contributionId": { "type": "string", "maxLength": 128 },
+        "originalOutstandingAmount": { "type": "number" },
+        "currentOutstandingAmount": { "type": "number" },
+        "amountAlreadyReceived": { "type": "number" },
+        "commitmentDate": { "type": "string", "format": "date-time" },
+        "promisedDate": { "type": "string", "format": "date-time" },
+        "durationDays": { "type": "number" },
+        "collectorId": { "type": "string", "maxLength": 128 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["active", "due_soon", "due_today", "completed", "overdue", "extension_requested", "revised"] },
+        "memberConfirmed": { "type": "boolean" },
+        "extensionCount": { "type": "number" },
+        "completedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "assignmentId", "memberId", "groupId", "originalOutstandingAmount", "currentOutstandingAmount", "commitmentDate", "promisedDate", "collectorId", "status"]
+    },
+    "CommitmentEvent": {
+      "title": "CommitmentEvent",
+      "description": "Audit event in commitment lifecycle (created, partial payment, extension requested, revised, completed)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "commitmentId": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "format": "date-time" },
+        "eventType": { "type": "string", "enum": ["created", "partial_payment", "extension_requested", "extension_granted", "revised", "completed", "missed"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "recordedBy": { "type": "string", "maxLength": 128 },
+        "newPromisedDate": { "type": "string", "format": "date-time" },
+        "amountPaid": { "type": "number" }
+      },
+      "required": ["id", "commitmentId", "date", "eventType", "notes", "recordedBy"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Group fund expenditure record with category, invoice/receipt number and approval",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "groupId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 120 },
+        "category": { "type": "string", "enum": ["electricity", "water", "rent", "internet", "security", "waste", "groceries", "maintenance", "other"] },
+        "amount": { "type": "number" },
+        "date": { "type": "string", "format": "date-time" },
+        "description": { "type": "string", "maxLength": 500 },
+        "responsiblePersonId": { "type": "string", "maxLength": 128 },
+        "receiptNumber": { "type": "string", "maxLength": 100 },
+        "receiptEvidenceUrl": { "type": "string", "maxLength": 500 },
+        "paymentReference": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "enum": ["approved", "pending_approval", "rejected"] },
+        "approvedBy": { "type": "string", "maxLength": 128 },
+        "approvedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "groupId", "name", "category", "amount", "date", "responsiblePersonId", "status", "createdAt"]
+    },
+    "Dispute": {
+      "title": "Dispute",
+      "description": "Financial conflict or assignment dispute filed by a member",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "groupId": { "type": "string", "maxLength": 128 },
+        "memberId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 150 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "relatedTransactionId": { "type": "string", "maxLength": 128 },
+        "relatedAssignmentId": { "type": "string", "maxLength": 128 },
+        "claimedAmount": { "type": "number" },
+        "status": { "type": "string", "enum": ["open", "under_review", "resolved", "rejected"] },
+        "resolutionNote": { "type": "string", "maxLength": 1000 },
+        "resolvedBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "groupId", "memberId", "title", "description", "status", "createdAt", "updatedAt"]
+    },
+    "AppNotification": {
+      "title": "AppNotification",
+      "description": "In-app and push notification event for members, collectors and administrators",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "groupId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 150 },
+        "message": { "type": "string", "maxLength": 500 },
+        "category": { "type": "string", "enum": ["payment", "commitment", "deadline", "expense", "dispute", "announcement"] },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "linkAction": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["id", "userId", "title", "message", "category", "read", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable security and financial audit event log",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "groupId": { "type": "string", "maxLength": 128 },
+        "actorId": { "type": "string", "maxLength": 128 },
+        "actorName": { "type": "string", "maxLength": 100 },
+        "action": { "type": "string", "maxLength": 100 },
+        "details": { "type": "string", "maxLength": 1000 },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "securityEvent": { "type": "boolean" }
+      },
+      "required": ["id", "actorId", "actorName", "action", "details", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profile accounts"
+    },
+    "/groups/{groupId}": {
+      "schema": { "$ref": "#/entities/Group" },
+      "description": "Shared financial groups and communities"
+    },
+    "/groups/{groupId}/members/{memberId}": {
+      "schema": { "$ref": "#/entities/GroupMember" },
+      "description": "Enrolled members of a financial group"
+    },
+    "/groups/{groupId}/contributions/{contributionId}": {
+      "schema": { "$ref": "#/entities/Contribution" },
+      "description": "Group shared expense contribution targets"
+    },
+    "/groups/{groupId}/assignments/{assignmentId}": {
+      "schema": { "$ref": "#/entities/ContributionAssignment" },
+      "description": "Member-specific contribution obligations and amounts"
+    },
+    "/groups/{groupId}/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/Payment" },
+      "description": "Verified and pending payment transaction records"
+    },
+    "/groups/{groupId}/commitments/{commitmentId}": {
+      "schema": { "$ref": "#/entities/PaymentCommitment" },
+      "description": "Payment promises and countdown deadlines"
+    },
+    "/groups/{groupId}/commitmentEvents/{eventId}": {
+      "schema": { "$ref": "#/entities/CommitmentEvent" },
+      "description": "Audit event log for commitments and partial payments"
+    },
+    "/groups/{groupId}/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/Expense" },
+      "description": "Expenditures made from collected group funds"
+    },
+    "/groups/{groupId}/disputes/{disputeId}": {
+      "schema": { "$ref": "#/entities/Dispute" },
+      "description": "Disputes filed by members regarding contributions or expenses"
+    },
+    "/users/{userId}/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/AppNotification" },
+      "description": "Direct user notifications and reminder milestones"
+    },
+    "/groups/{groupId}/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable group audit log events"
+    }
+  }
+}
