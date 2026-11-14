@@ -1,5 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
+import { useToast } from '../../context/ToastContext';
+import { Modal } from '../ui/Modal';
+import { EmptyState } from '../ui/EmptyState';
 import {
   CommunicationType,
   AudienceType,
@@ -25,7 +28,6 @@ import {
   ExternalLink,
   ChevronRight,
   FileText,
-  X,
   AlertCircle,
 } from 'lucide-react';
 
@@ -42,6 +44,7 @@ export const EmailCommunicationsCenterView: React.FC = () => {
     notificationConfig,
     updateNotificationConfig,
   } = useApp();
+  const { showToast } = useToast();
 
   const [activeTab, setActiveTab] = useState<'compose' | 'history' | 'automation'>('compose');
   const [commType, setCommType] = useState<CommunicationType>('announcement');
@@ -140,6 +143,7 @@ export const EmailCommunicationsCenterView: React.FC = () => {
           `Please observe all agreed contribution timelines and shared facility guidelines.\n\n` +
           `Warm regards,\n${adminLabel}\nAdministrator, ${currentGroup.name}`
       );
+      showToast('Template applied', { message: 'Loaded general announcement template.', variant: 'info' });
     } else if (type === 'financial_reminder') {
       setTargetAudience('outstanding_only');
       setSubject(`Financial Balance Reminder — ${currentGroup.name}`);
@@ -149,6 +153,7 @@ export const EmailCommunicationsCenterView: React.FC = () => {
           `Prompt settlement keeps shared utilities active without interruption.\n\n` +
           `Please review your balance below and settle with the administrator.`
       );
+      showToast('Template applied', { message: 'Loaded private balance reminder template.', variant: 'info' });
     } else if (type === 'cleared_balance') {
       setTargetAudience('paid_only');
       setSubject(`All Balances Settled — ${currentGroup.name}`);
@@ -156,6 +161,7 @@ export const EmailCommunicationsCenterView: React.FC = () => {
         `Dear Member,\n\n` +
           `Thank you for settling your contribution obligations in full. Your account is in good standing.`
       );
+      showToast('Template applied', { message: 'Loaded cleared balance template.', variant: 'info' });
     }
   };
 
@@ -182,14 +188,16 @@ export const EmailCommunicationsCenterView: React.FC = () => {
     });
 
     if (result) {
-      setDispatchSuccess(
-        `Dispatched "${effectiveSubject}" to ${result.recipientCount} active recipient(s).`
-      );
+      const msg = `Dispatched "${effectiveSubject}" to ${result.recipientCount} active recipient(s).`;
+      setDispatchSuccess(msg);
+      showToast('Communication dispatched', { message: msg, variant: 'success' });
       setSubject('');
       setMessage('');
       setTimeout(() => setDispatchSuccess(null), 6000);
     } else {
-      setDispatchError('Could not dispatch communication. Check audience selection.');
+      const errMsg = 'Could not dispatch communication. Check audience selection.';
+      setDispatchError(errMsg);
+      showToast('Dispatch failed', { message: errMsg, variant: 'error' });
     }
   };
 
@@ -199,55 +207,57 @@ export const EmailCommunicationsCenterView: React.FC = () => {
     const encodedSubj = encodeURIComponent(subject || previewData.subject);
     const encodedBody = encodeURIComponent(previewData.personalizedSnippet);
     window.location.href = `mailto:?bcc=${bccList}&subject=${encodedSubj}&body=${encodedBody}`;
+    showToast('Opening email client', {
+      message: `Prepared BCC draft for ${targetMembers.length} recipient(s).`,
+      variant: 'info',
+    });
   };
 
   if (!currentGroup) {
     return (
-      <div className="bg-white border border-neutral-200 rounded-2xl p-12 text-center text-neutral-500">
-        <Mail className="w-10 h-10 text-neutral-300 mx-auto mb-3" />
-        <h3 className="text-lg font-bold text-neutral-900 mb-1">No Active Financial Group</h3>
-        <p className="max-w-md mx-auto text-xs text-neutral-500">
-          Select or create an administrator group to compose notices and balance reminders.
-        </p>
-      </div>
+      <EmptyState
+        icon={Mail}
+        title="No Active Financial Group"
+        description="Select or create an administrator group to compose notices and private balance reminders."
+      />
     );
   }
 
   return (
     <div className="space-y-6">
-      {/* Cohesive KLARENCY Header Card */}
-      <div className="bg-white border border-neutral-200 rounded-2xl p-6 shadow-xs">
+      {/* Header Card */}
+      <div className="bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-xs">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 text-xs mb-1">
-              <span className="uppercase tracking-widest font-extrabold text-[#D5A52B]">
+              <span className="uppercase tracking-widest font-extrabold text-[#B78816] dark:text-[#E5B93C]">
                 Communications Engine
               </span>
-              <span className="text-neutral-300">•</span>
-              <span className="font-semibold text-neutral-600">{currentGroup.name}</span>
+              <span className="text-slate-300 dark:text-slate-600">•</span>
+              <span className="font-semibold text-slate-600 dark:text-slate-300">{currentGroup.name}</span>
             </div>
-            <h1 className="text-2xl font-extrabold text-neutral-900 tracking-tight">
+            <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-slate-50 tracking-tight">
               Email Communications Hub
             </h1>
-            <p className="text-xs text-neutral-500 mt-1 max-w-2xl">
+            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1 max-w-2xl">
               Send group announcements or strictly private balance reminders without exposing one member’s figures to another.
             </p>
           </div>
 
           <div className="flex items-center gap-3 tabular-nums">
-            <div className="bg-neutral-50 border border-neutral-200 px-4 py-2.5 rounded-xl text-center">
-              <span className="text-[11px] text-neutral-500 block font-medium">
+            <div className="bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 px-4 py-2.5 rounded-xl text-center">
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 block font-medium">
                 Active Directory
               </span>
-              <span className="text-base font-bold text-neutral-900">
+              <span className="text-base font-bold text-slate-900 dark:text-slate-50">
                 {activeMembers.length} members
               </span>
             </div>
-            <div className="bg-neutral-50 border border-neutral-200 px-4 py-2.5 rounded-xl text-center">
-              <span className="text-[11px] text-neutral-500 block font-medium">
+            <div className="bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 px-4 py-2.5 rounded-xl text-center">
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 block font-medium">
                 Dispatches Logged
               </span>
-              <span className="text-base font-bold text-neutral-900">
+              <span className="text-base font-bold text-slate-900 dark:text-slate-50">
                 {groupCommunications.length} sent
               </span>
             </div>
@@ -255,26 +265,26 @@ export const EmailCommunicationsCenterView: React.FC = () => {
         </div>
 
         {/* Navigation Tabs */}
-        <div className="flex flex-wrap items-center gap-2 mt-5 border-t border-neutral-100 pt-4">
+        <div className="flex flex-wrap items-center gap-2 mt-5 border-t border-slate-100 dark:border-slate-800/80 pt-4">
           <button
             type="button"
             onClick={() => setActiveTab('compose')}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap ${
+            className={`min-h-[44px] px-4 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap ${
               activeTab === 'compose'
-                ? 'bg-neutral-900 text-white font-bold'
-                : 'text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100'
+                ? 'bg-slate-900 dark:bg-blue-600 text-white font-bold shadow-xs'
+                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#131D33]'
             }`}
           >
             <Send className="w-3.5 h-3.5" />
-            <span>Compose & Dispatch</span>
+            <span>Compose &amp; Dispatch</span>
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('history')}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap ${
+            className={`min-h-[44px] px-4 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap ${
               activeTab === 'history'
-                ? 'bg-neutral-900 text-white font-bold'
-                : 'text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100'
+                ? 'bg-slate-900 dark:bg-blue-600 text-white font-bold shadow-xs'
+                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#131D33]'
             }`}
           >
             <Clock className="w-3.5 h-3.5" />
@@ -283,10 +293,10 @@ export const EmailCommunicationsCenterView: React.FC = () => {
           <button
             type="button"
             onClick={() => setActiveTab('automation')}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap ${
+            className={`min-h-[44px] px-4 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap ${
               activeTab === 'automation'
-                ? 'bg-neutral-900 text-white font-bold'
-                : 'text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100'
+                ? 'bg-slate-900 dark:bg-blue-600 text-white font-bold shadow-xs'
+                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#131D33]'
             }`}
           >
             <Sliders className="w-3.5 h-3.5" />
@@ -296,15 +306,15 @@ export const EmailCommunicationsCenterView: React.FC = () => {
       </div>
 
       {dispatchSuccess && (
-        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex items-center justify-between text-emerald-900 text-xs">
+        <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 rounded-xl p-4 flex items-center justify-between gap-3 text-emerald-900 dark:text-emerald-200 text-xs">
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
             <span className="font-semibold">{dispatchSuccess}</span>
           </div>
           <button
             type="button"
             onClick={() => setDispatchSuccess(null)}
-            className="text-emerald-700 hover:text-emerald-950 font-bold cursor-pointer"
+            className="min-h-[36px] px-2 text-emerald-700 dark:text-emerald-300 hover:underline font-bold cursor-pointer shrink-0"
           >
             Dismiss
           </button>
@@ -312,15 +322,15 @@ export const EmailCommunicationsCenterView: React.FC = () => {
       )}
 
       {dispatchError && (
-        <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 flex items-center justify-between text-rose-900 text-xs">
+        <div className="bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 rounded-xl p-4 flex items-center justify-between gap-3 text-rose-900 dark:text-rose-200 text-xs">
           <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
             <span className="font-semibold">{dispatchError}</span>
           </div>
           <button
             type="button"
             onClick={() => setDispatchError(null)}
-            className="text-rose-700 hover:text-rose-950 font-bold cursor-pointer"
+            className="min-h-[36px] px-2 text-rose-700 dark:text-rose-300 hover:underline font-bold cursor-pointer shrink-0"
           >
             Dismiss
           </button>
@@ -331,32 +341,32 @@ export const EmailCommunicationsCenterView: React.FC = () => {
       {activeTab === 'compose' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           <div className="lg:col-span-7">
-            <div className="bg-white border border-neutral-200 rounded-2xl p-6 shadow-xs space-y-5">
-              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-neutral-100">
-                <h2 className="text-base font-bold text-neutral-900 flex items-center gap-2">
-                  <FileText className="w-4 h-4 text-[#D5A52B]" />
+            <div className="bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-xs space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800/80">
+                <h2 className="text-base font-bold text-slate-900 dark:text-slate-50 flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-[#D5A52B] dark:text-[#E5B93C]" />
                   <span>Notice Configuration</span>
                 </h2>
-                <div className="flex items-center gap-1.5 text-[11px]">
-                  <span className="text-neutral-500">Templates:</span>
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <span className="text-slate-500 dark:text-slate-400 mr-1">Templates:</span>
                   <button
                     type="button"
                     onClick={() => handleApplyTemplate('announcement')}
-                    className="px-2.5 py-1 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-800 font-semibold cursor-pointer"
+                    className="min-h-[36px] px-3 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-[#131D33] dark:hover:bg-[#1A2744] text-slate-800 dark:text-slate-200 font-semibold cursor-pointer"
                   >
                     General
                   </button>
                   <button
                     type="button"
                     onClick={() => handleApplyTemplate('financial_reminder')}
-                    className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 font-semibold border border-amber-200 cursor-pointer"
+                    className="min-h-[36px] px-3 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/50 dark:hover:bg-amber-900/50 text-amber-900 dark:text-amber-300 font-semibold border border-amber-200 dark:border-amber-800/60 cursor-pointer"
                   >
                     Reminder
                   </button>
                   <button
                     type="button"
                     onClick={() => handleApplyTemplate('cleared_balance')}
-                    className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-semibold border border-emerald-200 cursor-pointer"
+                    className="min-h-[36px] px-3 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/50 dark:hover:bg-emerald-900/50 text-emerald-800 dark:text-emerald-300 font-semibold border border-emerald-200 dark:border-emerald-800/60 cursor-pointer"
                   >
                     Cleared
                   </button>
@@ -365,7 +375,7 @@ export const EmailCommunicationsCenterView: React.FC = () => {
 
               <form onSubmit={handleDispatch} className="space-y-4 text-xs">
                 <div>
-                  <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1.5">
+                  <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5">
                     Communication Type
                   </label>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -379,16 +389,16 @@ export const EmailCommunicationsCenterView: React.FC = () => {
                         key={opt.id}
                         type="button"
                         onClick={() => setCommType(opt.id as CommunicationType)}
-                        className={`p-2.5 rounded-xl text-left border transition cursor-pointer ${
+                        className={`min-h-[48px] p-2.5 rounded-xl text-left border transition cursor-pointer ${
                           commType === opt.id
-                            ? 'bg-neutral-900 border-neutral-900 text-white'
-                            : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                            ? 'bg-slate-900 dark:bg-blue-600 border-slate-900 dark:border-blue-500 text-white'
+                            : 'bg-slate-50 dark:bg-[#11192C] border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#17223B]'
                         }`}
                       >
                         <span className="font-bold block">{opt.title}</span>
                         <span
                           className={`text-[10px] ${
-                            commType === opt.id ? 'text-neutral-300' : 'text-neutral-500'
+                            commType === opt.id ? 'text-slate-300 dark:text-blue-100' : 'text-slate-500 dark:text-slate-400'
                           }`}
                         >
                           {opt.sub}
@@ -400,21 +410,25 @@ export const EmailCommunicationsCenterView: React.FC = () => {
 
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
-                    <label className="font-semibold uppercase tracking-wider text-neutral-600">
+                    <label
+                      htmlFor="comm-target-audience"
+                      className="font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400"
+                    >
                       Target Audience
                     </label>
-                    <span className="font-bold text-neutral-900 flex items-center gap-1 tabular-nums">
-                      <Users className="w-3.5 h-3.5 text-[#D5A52B]" />
+                    <span className="font-bold text-slate-900 dark:text-slate-100 flex items-center gap-1 tabular-nums">
+                      <Users className="w-3.5 h-3.5 text-[#D5A52B] dark:text-[#E5B93C]" />
                       {targetMembers.length} active recipient(s)
                     </span>
                   </div>
                   <select
+                    id="comm-target-audience"
                     value={targetAudience}
                     onChange={(e) => {
                       setTargetAudience(e.target.value as AudienceType);
                       setPreviewMemberIndex(0);
                     }}
-                    className="w-full bg-white border border-neutral-200 rounded-xl px-3.5 py-2.5 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900"
+                    className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="all_active">
                       All Active Group Members ({activeMembers.length})
@@ -430,16 +444,20 @@ export const EmailCommunicationsCenterView: React.FC = () => {
 
                 {targetAudience === 'individual' && (
                   <div>
-                    <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1.5">
+                    <label
+                      htmlFor="comm-individual-member"
+                      className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5"
+                    >
                       Select Registered Member
                     </label>
                     <select
+                      id="comm-individual-member"
                       value={selectedMemberId}
                       onChange={(e) => {
                         setSelectedMemberId(e.target.value);
                         setPreviewMemberIndex(0);
                       }}
-                      className="w-full bg-white border border-neutral-200 rounded-xl px-3.5 py-2.5 text-sm text-neutral-900"
+                      className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
                       required
                     >
                       <option value="">Choose active member...</option>
@@ -453,13 +471,17 @@ export const EmailCommunicationsCenterView: React.FC = () => {
                 )}
 
                 <div>
-                  <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1.5">
+                  <label
+                    htmlFor="comm-contribution-scope"
+                    className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5"
+                  >
                     Associated Contribution (Optional)
                   </label>
                   <select
+                    id="comm-contribution-scope"
                     value={selectedContributionId}
                     onChange={(e) => setSelectedContributionId(e.target.value)}
-                    className="w-full bg-white border border-neutral-200 rounded-xl px-3.5 py-2.5 text-sm text-neutral-900"
+                    className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="">Entire Group Scope</option>
                     {contributions
@@ -473,52 +495,60 @@ export const EmailCommunicationsCenterView: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1.5">
+                  <label
+                    htmlFor="comm-subject"
+                    className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5"
+                  >
                     Subject Line
                   </label>
                   <input
+                    id="comm-subject"
                     type="text"
                     value={subject}
                     onChange={(e) => setSubject(e.target.value)}
                     placeholder={previewData.subject}
-                    className="w-full bg-white border border-neutral-200 rounded-xl px-3.5 py-2.5 text-sm text-neutral-900 font-medium"
+                    className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-slate-100 font-medium placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
 
                 <div>
-                  <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1.5">
+                  <label
+                    htmlFor="comm-body"
+                    className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5"
+                  >
                     Message Body
                   </label>
                   <textarea
+                    id="comm-body"
                     rows={5}
                     value={message}
                     onChange={(e) => setMessage(e.target.value)}
                     placeholder="Write your notice here. Individual member balances and references are automatically attached privately."
-                    className="w-full bg-white border border-neutral-200 rounded-xl px-3.5 py-2.5 text-sm text-neutral-900"
+                    className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
 
-                <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-3">
-                  <div className="flex items-center justify-between text-xs text-neutral-600 mb-2">
-                    <span className="font-semibold text-neutral-900">
+                <div className="bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 rounded-xl p-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 dark:text-slate-400 mb-2.5">
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">
                       Matched Active Recipients ({targetMembers.length})
                     </span>
-                    <span className="text-[11px] text-emerald-700 flex items-center gap-1 font-medium">
+                    <span className="text-[11px] text-emerald-700 dark:text-emerald-400 flex items-center gap-1 font-medium">
                       <ShieldCheck className="w-3.5 h-3.5" />
                       Suspended/removed excluded
                     </span>
                   </div>
                   {targetMembers.length > 0 ? (
-                    <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                    <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
                       {targetMembers.map((m, idx) => (
                         <button
                           key={m.id}
                           type="button"
                           onClick={() => setPreviewMemberIndex(idx)}
-                          className={`text-xs px-2.5 py-1 rounded-lg border transition cursor-pointer ${
+                          className={`min-h-[34px] text-xs px-2.5 py-1 rounded-lg border transition cursor-pointer ${
                             previewMemberIndex === idx
-                              ? 'bg-neutral-900 border-neutral-900 text-white font-semibold'
-                              : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                              ? 'bg-slate-900 dark:bg-blue-600 border-slate-900 dark:border-blue-500 text-white font-semibold'
+                              : 'bg-white dark:bg-[#0D1424] border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#17223B]'
                           }`}
                         >
                           {m.name}
@@ -526,7 +556,7 @@ export const EmailCommunicationsCenterView: React.FC = () => {
                       ))}
                     </div>
                   ) : (
-                    <p className="text-xs text-amber-700">
+                    <p className="text-xs text-amber-700 dark:text-amber-400">
                       No active members match this filter.
                     </p>
                   )}
@@ -536,16 +566,16 @@ export const EmailCommunicationsCenterView: React.FC = () => {
                   <button
                     type="submit"
                     disabled={targetMembers.length === 0}
-                    className="flex-1 bg-neutral-900 hover:bg-black disabled:bg-neutral-300 text-white font-bold px-6 py-3 rounded-xl flex items-center justify-center gap-2 transition cursor-pointer"
+                    className="flex-1 min-h-[44px] bg-slate-900 hover:bg-black dark:bg-blue-600 dark:hover:bg-blue-500 disabled:bg-slate-300 dark:disabled:bg-slate-800 disabled:text-slate-500 text-white font-bold px-6 py-3 rounded-xl flex items-center justify-center gap-2 transition cursor-pointer"
                   >
-                    <Send className="w-4 h-4 text-[#D5A52B]" />
-                    <span>Log & Dispatch Notice ({targetMembers.length})</span>
+                    <Send className="w-4 h-4 text-[#E5B93C]" />
+                    <span>Log &amp; Dispatch Notice ({targetMembers.length})</span>
                   </button>
                   <button
                     type="button"
                     onClick={openMailtoClient}
                     disabled={targetMembers.length === 0}
-                    className="bg-white hover:bg-neutral-50 disabled:opacity-50 text-neutral-800 px-4 py-3 rounded-xl border border-neutral-200 text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer whitespace-nowrap"
+                    className="min-h-[44px] bg-white dark:bg-[#11192C] hover:bg-slate-50 dark:hover:bg-[#17223B] disabled:opacity-50 text-slate-800 dark:text-slate-200 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer whitespace-nowrap"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
                     <span>Open Mailto</span>
@@ -557,46 +587,46 @@ export const EmailCommunicationsCenterView: React.FC = () => {
 
           {/* Right Column: Live Recipient Preview */}
           <div className="lg:col-span-5">
-            <div className="bg-white border border-neutral-200 rounded-2xl p-5 shadow-xs space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-neutral-100">
+            <div className="bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-xs space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800/80">
                 <div className="flex items-center gap-2">
-                  <Eye className="w-4 h-4 text-[#D5A52B]" />
-                  <span className="text-sm font-bold text-neutral-900">
+                  <Eye className="w-4 h-4 text-[#D5A52B] dark:text-[#E5B93C]" />
+                  <span className="text-sm font-bold text-slate-900 dark:text-slate-50">
                     Live Recipient Preview
                   </span>
                 </div>
                 {targetMembers.length > 1 && (
-                  <span className="text-[11px] text-neutral-500 tabular-nums">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
                     {previewMemberIndex + 1} / {targetMembers.length}
                   </span>
                 )}
               </div>
 
-              <div className="border border-neutral-200 rounded-xl overflow-hidden">
-                <div className="bg-neutral-50 px-4 py-3 border-b border-neutral-200 space-y-1 text-xs">
+              <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+                <div className="bg-slate-50 dark:bg-[#11192C] px-4 py-3 border-b border-slate-200 dark:border-slate-800 space-y-1 text-xs">
                   <div className="flex justify-between gap-2">
-                    <span className="text-neutral-500">To:</span>
-                    <span className="font-semibold text-neutral-900 truncate">
+                    <span className="text-slate-500 dark:text-slate-400">To:</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100 truncate">
                       {currentPreviewMember?.name || 'Member'} &lt;
                       {currentPreviewMember?.email || 'member@example.mw'}&gt;
                     </span>
                   </div>
                   <div className="flex justify-between gap-2">
-                    <span className="text-neutral-500">Subject:</span>
-                    <span className="font-bold text-neutral-900 truncate">
+                    <span className="text-slate-500 dark:text-slate-400">Subject:</span>
+                    <span className="font-bold text-slate-900 dark:text-slate-100 truncate">
                       {previewData.subject}
                     </span>
                   </div>
                 </div>
 
-                <div className="p-4 space-y-3 bg-white text-xs text-neutral-800 leading-relaxed">
+                <div className="p-4 space-y-3 bg-white dark:bg-[#0B1120] text-xs text-slate-800 dark:text-slate-200 leading-relaxed">
                   <div>
-                    <h3 className="font-bold text-neutral-900 text-sm">
+                    <h3 className="font-bold text-slate-900 dark:text-slate-50 text-sm">
                       Hello {currentPreviewMember?.name || 'Member'},
                     </h3>
-                    <p className="text-[11px] text-neutral-500">
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
                       Ref:{' '}
-                      <span className="font-mono font-semibold text-neutral-800">
+                      <span className="font-mono font-semibold text-slate-800 dark:text-slate-200">
                         {currentPreviewMember?.memberRefId || 'MEM-2026'}
                       </span>
                       {currentPreviewMember?.roomNumber
@@ -605,28 +635,28 @@ export const EmailCommunicationsCenterView: React.FC = () => {
                     </p>
                   </div>
 
-                  <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-3 whitespace-pre-line text-neutral-700">
+                  <div className="bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 rounded-lg p-3 whitespace-pre-line text-slate-700 dark:text-slate-300">
                     {previewData.personalizedSnippet}
                   </div>
 
                   {commType === 'financial_reminder' &&
                     previewData.outstandingAmount !== undefined && (
-                      <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center justify-between tabular-nums">
+                      <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 rounded-xl p-3 flex items-center justify-between tabular-nums">
                         <div>
-                          <span className="text-[10px] text-amber-800 uppercase tracking-wider font-bold block">
+                          <span className="text-[10px] text-amber-800 dark:text-amber-300 uppercase tracking-wider font-bold block">
                             Current Outstanding Balance
                           </span>
-                          <span className="text-base font-extrabold text-amber-950">
+                          <span className="text-base font-extrabold text-amber-950 dark:text-amber-200">
                             {formatMWK(previewData.outstandingAmount)}
                           </span>
                         </div>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 dark:bg-amber-900/60 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700">
                           Private Notice
                         </span>
                       </div>
                     )}
 
-                  <div className="pt-3 border-t border-neutral-100 text-[10px] text-neutral-500">
+                  <div className="pt-3 border-t border-slate-100 dark:border-slate-800 text-[10px] text-slate-500 dark:text-slate-400">
                     Dispatched privately by administrator{' '}
                     {currentUser?.name || 'Administrator'} via UnitSpot. Member balances are never disclosed to other residents.
                   </div>
@@ -634,12 +664,12 @@ export const EmailCommunicationsCenterView: React.FC = () => {
               </div>
 
               {targetMembers.length > 1 && (
-                <div className="flex items-center justify-between text-xs">
+                <div className="flex items-center justify-between text-xs gap-2">
                   <button
                     type="button"
                     disabled={previewMemberIndex === 0}
                     onClick={() => setPreviewMemberIndex((prev) => Math.max(0, prev - 1))}
-                    className="px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200 disabled:opacity-40 text-neutral-800 font-semibold cursor-pointer"
+                    className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#131D33] dark:hover:bg-[#1A2744] disabled:opacity-40 text-slate-800 dark:text-slate-200 font-semibold cursor-pointer"
                   >
                     Previous
                   </button>
@@ -651,7 +681,7 @@ export const EmailCommunicationsCenterView: React.FC = () => {
                         Math.min(targetMembers.length - 1, prev + 1)
                       )
                     }
-                    className="px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200 disabled:opacity-40 text-neutral-800 font-semibold cursor-pointer"
+                    className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#131D33] dark:hover:bg-[#1A2744] disabled:opacity-40 text-slate-800 dark:text-slate-200 font-semibold cursor-pointer"
                   >
                     Next Recipient
                   </button>
@@ -664,56 +694,63 @@ export const EmailCommunicationsCenterView: React.FC = () => {
 
       {/* TAB 2: DELIVERY HISTORY */}
       {activeTab === 'history' && (
-        <div className="bg-white border border-neutral-200 rounded-2xl p-6 shadow-xs space-y-4">
-          <div className="flex items-center justify-between pb-3 border-b border-neutral-100">
+        <div className="bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-xs space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800/80">
             <div>
-              <h2 className="text-base font-bold text-neutral-900">
+              <h2 className="text-base font-bold text-slate-900 dark:text-slate-50">
                 Communication Dispatch Log
               </h2>
-              <p className="text-xs text-neutral-500">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
                 Audited history of group notices, payment confirmations, and reminders
               </p>
             </div>
-            <span className="text-xs font-bold bg-neutral-100 text-neutral-800 px-3 py-1 rounded-lg tabular-nums">
+            <span className="text-xs font-bold bg-slate-100 dark:bg-[#131D33] text-slate-800 dark:text-slate-200 px-3 py-1.5 rounded-lg tabular-nums">
               {groupCommunications.length} Sent
             </span>
           </div>
 
           {groupCommunications.length === 0 ? (
-            <div className="text-center py-12 text-neutral-400 text-xs">
-              <Mail className="w-8 h-8 mx-auto text-neutral-300 mb-2" />
-              <p>No communications dispatched yet for {currentGroup.name}.</p>
-            </div>
+            <EmptyState
+              icon={Mail}
+              title="No Dispatches Recorded Yet"
+              description={`Compose and send your first announcement or payment reminder for ${currentGroup.name}.`}
+              actionLabel="Compose First Notice"
+              onAction={() => setActiveTab('compose')}
+            />
           ) : (
             <div className="space-y-3">
               {groupCommunications.map((item) => (
                 <div
                   key={item.id}
-                  className="bg-neutral-50 border border-neutral-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  className="bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                 >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2 text-[11px]">
-                      <span className="px-2 py-0.5 rounded font-bold uppercase bg-neutral-900 text-white">
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                      <span className="px-2 py-0.5 rounded font-bold uppercase bg-slate-900 dark:bg-blue-600 text-white">
                         {item.type.replace('_', ' ')}
                       </span>
-                      <span className="text-neutral-500 tabular-nums">
+                      <span className="text-slate-500 dark:text-slate-400 tabular-nums">
                         {new Date(item.sentAt).toLocaleString()}
                       </span>
                     </div>
-                    <h4 className="text-sm font-bold text-neutral-900">{item.subject}</h4>
-                    <p className="text-xs text-neutral-600 line-clamp-1">{item.message}</p>
+                    <h4 className="text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
+                      {item.subject}
+                    </h4>
+                    <p className="text-xs text-slate-600 dark:text-slate-400 line-clamp-1">
+                      {item.message}
+                    </p>
                   </div>
 
-                  <div className="flex items-center gap-3 shrink-0 tabular-nums">
-                    <div className="text-right text-xs">
-                      <span className="font-bold text-neutral-900 block">
+                  <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 tabular-nums">
+                    <div className="text-left sm:text-right text-xs">
+                      <span className="font-bold text-slate-900 dark:text-slate-100 block">
                         {item.deliveredCount} / {item.recipientCount} Delivered
                       </span>
                     </div>
                     <button
                       type="button"
                       onClick={() => setSelectedHistoryItem(item)}
-                      className="px-3 py-1.5 rounded-lg bg-white border border-neutral-200 hover:bg-neutral-100 text-neutral-800 text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                      className="min-h-[44px] px-3.5 py-2 rounded-xl bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-[#17223B] text-slate-800 dark:text-slate-200 text-xs font-semibold flex items-center gap-1 cursor-pointer"
                     >
                       <span>Recipients</span>
                       <ChevronRight className="w-3.5 h-3.5" />
@@ -724,67 +761,53 @@ export const EmailCommunicationsCenterView: React.FC = () => {
             </div>
           )}
 
-          {selectedHistoryItem && (
-            <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-              <div className="bg-white border border-neutral-200 rounded-2xl max-w-2xl w-full p-6 space-y-4 max-h-[85vh] overflow-y-auto shadow-2xl">
-                <div className="flex items-center justify-between pb-3 border-b border-neutral-100">
-                  <div>
-                    <span className="text-[11px] font-bold text-[#D5A52B] uppercase tracking-wider block">
-                      Dispatch Recipients
-                    </span>
-                    <h3 className="text-lg font-bold text-neutral-900">
-                      {selectedHistoryItem.subject}
-                    </h3>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedHistoryItem(null)}
-                    className="text-neutral-400 hover:text-neutral-700 p-1 rounded-lg cursor-pointer"
+          <Modal
+            isOpen={Boolean(selectedHistoryItem)}
+            onClose={() => setSelectedHistoryItem(null)}
+            title={selectedHistoryItem?.subject || 'Dispatch Recipients'}
+            subtitle="Confidential per-recipient delivery summary"
+            maxWidthClass="max-w-2xl"
+          >
+            {selectedHistoryItem && (
+              <div className="space-y-2.5">
+                {selectedHistoryItem.recipients.map((r) => (
+                  <div
+                    key={r.memberId}
+                    className="bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 rounded-xl p-3.5 text-xs space-y-1.5"
                   >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-
-                <div className="space-y-2">
-                  {selectedHistoryItem.recipients.map((r) => (
-                    <div
-                      key={r.memberId}
-                      className="bg-neutral-50 border border-neutral-200 rounded-xl p-3 text-xs space-y-1.5"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-neutral-900">{r.name}</span>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                          {r.deliveryStatus}
-                        </span>
-                      </div>
-                      <p className="text-neutral-500">
-                        {r.email} {r.phone ? `• ${r.phone}` : ''}
-                      </p>
-                      {r.outstandingAmount !== undefined && (
-                        <p className="text-amber-800 font-semibold tabular-nums">
-                          Balance Referenced: {formatMWK(r.outstandingAmount)}
-                        </p>
-                      )}
-                      <div className="bg-white border border-neutral-200 p-2.5 rounded text-[11px] text-neutral-700 whitespace-pre-line">
-                        {r.personalizedSnippet}
-                      </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-slate-900 dark:text-slate-100">{r.name}</span>
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
+                        {r.deliveryStatus}
+                      </span>
                     </div>
-                  ))}
-                </div>
+                    <p className="text-slate-500 dark:text-slate-400">
+                      {r.email} {r.phone ? `• ${r.phone}` : ''}
+                    </p>
+                    {r.outstandingAmount !== undefined && (
+                      <p className="text-amber-800 dark:text-amber-300 font-semibold tabular-nums">
+                        Balance Referenced: {formatMWK(r.outstandingAmount)}
+                      </p>
+                    )}
+                    <div className="bg-white dark:bg-[#0B1120] border border-slate-200 dark:border-slate-800 p-2.5 rounded-lg text-[11px] text-slate-700 dark:text-slate-300 whitespace-pre-line">
+                      {r.personalizedSnippet}
+                    </div>
+                  </div>
+                ))}
               </div>
-            </div>
-          )}
+            )}
+          </Modal>
         </div>
       )}
 
       {/* TAB 3: AUTOMATION RULES */}
       {activeTab === 'automation' && (
-        <div className="bg-white border border-neutral-200 rounded-2xl p-6 shadow-xs space-y-4">
-          <div className="pb-3 border-b border-neutral-100">
-            <h2 className="text-base font-bold text-neutral-900">
+        <div className="bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-xs space-y-4">
+          <div className="pb-3 border-b border-slate-100 dark:border-slate-800/80">
+            <h2 className="text-base font-bold text-slate-900 dark:text-slate-50">
               Automated Notification Triggers
             </h2>
-            <p className="text-xs text-neutral-500 mt-0.5">
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               Control automatic email logging when payments, cleared balances, or obligations occur
             </p>
           </div>
@@ -819,25 +842,30 @@ export const EmailCommunicationsCenterView: React.FC = () => {
             return (
               <div
                 key={rule.key}
-                className="flex items-start justify-between p-4 rounded-xl bg-neutral-50 border border-neutral-200"
+                className="flex items-center justify-between p-4 rounded-xl bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 gap-4"
               >
-                <div className="space-y-1 pr-4">
-                  <span className="text-sm font-bold text-neutral-900 flex items-center gap-2">
-                    <Icon className="w-4 h-4 text-[#D5A52B]" />
+                <div className="space-y-1">
+                  <span className="text-sm font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                    <Icon className="w-4 h-4 text-[#D5A52B] dark:text-[#E5B93C] shrink-0" />
                     <span>{rule.title}</span>
                   </span>
-                  <p className="text-xs text-neutral-600">{rule.desc}</p>
+                  <p className="text-xs text-slate-600 dark:text-slate-400">{rule.desc}</p>
                 </div>
-                <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <label className="relative inline-flex items-center cursor-pointer shrink-0 min-h-[44px] px-1">
                   <input
                     type="checkbox"
                     checked={notificationConfig[rule.key]}
-                    onChange={(e) =>
-                      updateNotificationConfig({ [rule.key]: e.target.checked })
-                    }
+                    onChange={(e) => {
+                      updateNotificationConfig({ [rule.key]: e.target.checked });
+                      showToast('Automation rule updated', {
+                        message: `${rule.title} ${e.target.checked ? 'enabled' : 'paused'}.`,
+                        variant: 'info',
+                      });
+                    }}
                     className="sr-only peer"
+                    aria-label={rule.title}
                   />
-                  <div className="w-11 h-6 bg-neutral-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-neutral-900" />
+                  <div className="w-11 h-6 bg-slate-300 dark:bg-slate-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[11px] after:left-[6px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
                 </label>
               </div>
             );

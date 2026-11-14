@@ -59,110 +59,115 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
   const currentAmount = toSafeIntMWK(commitment.currentOutstandingAmount);
   const paidAgainstCommitment = Math.max(0, originalAmount - currentAmount);
   const completionPercentage =
-    originalAmount > 0 ? Math.min(100, Math.round((paidAgainstCommitment / originalAmount) * 100)) : 100;
+    originalAmount > 0
+      ? Math.min(100, Math.round((paidAgainstCommitment / originalAmount) * 100))
+      : 100;
 
-  const getBadgeStyle = () => {
+  const getStatusMeta = () => {
     if (countdown.computedStatus === 'completed' || currentAmount <= 0) {
       return {
-        bg: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+        color: 'text-emerald-700 dark:text-emerald-400',
         label: 'Honoured & Completed',
         icon: CheckCircle2,
       };
     }
     if (countdown.computedStatus === 'overdue' || countdown.isOverdue) {
       return {
-        bg: 'bg-rose-50 text-rose-800 border-rose-200',
+        color: 'text-rose-700 dark:text-rose-400',
         label: 'Overdue Deadline',
         icon: AlertTriangle,
       };
     }
     if (commitment.status === 'extension_requested') {
       return {
-        bg: 'bg-amber-50 text-amber-900 border-amber-300',
+        color: 'text-amber-700 dark:text-[#E5B93C]',
         label: 'Extension Requested',
         icon: Clock,
       };
     }
     if (countdown.isDueToday) {
       return {
-        bg: 'bg-amber-50 text-amber-800 border-amber-200',
+        color: 'text-amber-700 dark:text-[#E5B93C]',
         label: 'Due Today',
         icon: Clock,
       };
     }
     if (countdown.isDueSoon) {
       return {
-        bg: 'bg-yellow-50 text-yellow-800 border-yellow-200',
-        label: 'Due Soon (<= 3 Days)',
+        color: 'text-amber-700 dark:text-amber-300',
+        label: 'Due Soon',
         icon: Clock,
       };
     }
     return {
-      bg: 'bg-neutral-100 text-neutral-800 border-neutral-200',
+      color: 'text-blue-600 dark:text-cyan-400',
       label: 'Active Commitment',
       icon: Clock,
     };
   };
 
-  const badge = getBadgeStyle();
-  const IconComponent = badge.icon;
+  const statusMeta = getStatusMeta();
+  const IconComponent = statusMeta.icon;
 
   return (
-    <div className="bg-white rounded-2xl border border-neutral-200/80 shadow-xs hover:shadow-md transition-all duration-200 overflow-hidden flex flex-col justify-between">
+    <div className="bg-white dark:bg-[#0D1424] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden flex flex-col justify-between">
       <div className="p-5 pb-4">
-        <div className="flex items-start justify-between gap-3 mb-3">
-          <div className="flex items-center gap-2.5">
+        <div className="flex items-start justify-between gap-2 mb-3">
+          <div className="flex items-center gap-2.5 min-w-0">
             {member?.avatarUrl ? (
               <img
                 src={member.avatarUrl}
                 alt={member.name}
-                className="w-10 h-10 rounded-full object-cover border border-neutral-200"
+                referrerPolicy="no-referrer"
+                className="w-10 h-10 rounded-full object-cover border border-slate-200 dark:border-slate-700 shrink-0"
               />
             ) : (
-              <div className="w-10 h-10 rounded-full bg-neutral-100 text-neutral-700 font-bold flex items-center justify-center text-sm border border-neutral-200">
+              <div className="w-10 h-10 rounded-full bg-slate-100 dark:bg-[#131D33] text-slate-700 dark:text-slate-200 font-bold flex items-center justify-center text-sm border border-slate-200 dark:border-slate-700 shrink-0">
                 {member?.name ? member.name.charAt(0).toUpperCase() : 'M'}
               </div>
             )}
-            <div>
-              <h4 className="font-semibold text-neutral-900 text-base leading-tight">
+            <div className="min-w-0">
+              <h4 className="font-semibold text-slate-900 dark:text-white text-base leading-tight truncate">
                 {member?.name || 'Member'}
               </h4>
-              <p className="text-xs text-neutral-500 mt-0.5">
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
                 {contribution?.title || 'Shared Contribution'}
               </p>
             </div>
           </div>
 
           <span
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${badge.bg}`}
+            className={`inline-flex items-center gap-1 text-[11px] font-bold whitespace-nowrap shrink-0 ${statusMeta.color}`}
           >
             <IconComponent className="w-3.5 h-3.5 shrink-0" />
-            {badge.label}
+            {statusMeta.label}
           </span>
         </div>
 
         {/* Financial Promise Highlight Box */}
-        <div className="bg-neutral-50 rounded-xl p-3.5 border border-neutral-100 mt-2">
+        <div className="bg-slate-50 dark:bg-[#11192C] rounded-xl p-3.5 border border-slate-200/80 dark:border-slate-800 mt-2">
           <div className="flex justify-between items-baseline mb-1">
-            <span className="text-xs font-medium text-neutral-500">Remaining Promised</span>
-            <span className="text-lg font-extrabold text-neutral-900 tracking-tight tabular-nums">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
+              Remaining Promised
+            </span>
+            <span className="text-lg font-extrabold font-mono text-slate-900 dark:text-white tracking-tight tabular-nums">
               {formatMWK(currentAmount)}
             </span>
           </div>
 
-          <div className="flex justify-between text-xs text-neutral-500 mb-2 tabular-nums">
+          <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-2 tabular-nums">
             <span>Original: {formatMWK(originalAmount)}</span>
-            <span>Paid so far: {formatMWK(paidAgainstCommitment)}</span>
+            <span>Paid: {formatMWK(paidAgainstCommitment)}</span>
           </div>
 
-          <div className="w-full h-2 bg-neutral-200 rounded-full overflow-hidden">
+          <div className="w-full h-2 bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden">
             <div
               className={`h-full transition-all duration-500 ${
                 currentAmount <= 0
                   ? 'bg-emerald-500'
                   : countdown.isOverdue
                     ? 'bg-rose-500'
-                    : 'bg-neutral-900'
+                    : 'bg-blue-600 dark:bg-cyan-400'
               }`}
               style={{ width: `${completionPercentage}%` }}
             />
@@ -170,13 +175,13 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
         </div>
 
         {/* Countdown Digits Display */}
-        <div className="mt-4 pt-3 border-t border-neutral-100">
-          <div className="flex items-center justify-between text-xs text-neutral-500 mb-1.5">
+        <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800">
+          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 mb-2">
             <span className="flex items-center gap-1 font-medium">
               <IconComponent className="w-3.5 h-3.5" />
-              Commitment Deadline:
+              Deadline:
             </span>
-            <span className="font-semibold text-neutral-800">
+            <span className="font-semibold text-slate-800 dark:text-slate-200">
               {new Date(commitment.promisedDate).toLocaleDateString('en-GB', {
                 day: 'numeric',
                 month: 'short',
@@ -189,15 +194,15 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
             <div
               className={`grid grid-cols-4 gap-2 text-center p-2.5 rounded-xl tabular-nums ${
                 countdown.isOverdue
-                  ? 'bg-rose-50/70 border border-rose-100 text-rose-950'
-                  : 'bg-neutral-900 text-white'
+                  ? 'bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-950 dark:text-rose-100'
+                  : 'bg-slate-900 dark:bg-[#131D33] border border-slate-800 dark:border-slate-700 text-white'
               }`}
             >
               <div className="flex flex-col">
                 <span className="text-xl font-bold font-mono tracking-tight leading-none">
                   {String(countdown.days).padStart(2, '0')}
                 </span>
-                <span className="text-[10px] uppercase tracking-wider text-neutral-400 mt-1">
+                <span className="text-[10px] uppercase tracking-wider text-slate-400 mt-1">
                   Days
                 </span>
               </div>
@@ -205,7 +210,7 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
                 <span className="text-xl font-bold font-mono tracking-tight leading-none">
                   {String(countdown.hours).padStart(2, '0')}
                 </span>
-                <span className="text-[10px] uppercase tracking-wider text-neutral-400 mt-1">
+                <span className="text-[10px] uppercase tracking-wider text-slate-400 mt-1">
                   Hours
                 </span>
               </div>
@@ -213,7 +218,7 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
                 <span className="text-xl font-bold font-mono tracking-tight leading-none">
                   {String(countdown.minutes).padStart(2, '0')}
                 </span>
-                <span className="text-[10px] uppercase tracking-wider text-neutral-400 mt-1">
+                <span className="text-[10px] uppercase tracking-wider text-slate-400 mt-1">
                   Mins
                 </span>
               </div>
@@ -221,26 +226,26 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
                 <span className="text-xl font-bold font-mono tracking-tight leading-none">
                   {String(countdown.seconds).padStart(2, '0')}
                 </span>
-                <span className="text-[10px] uppercase tracking-wider text-neutral-400 mt-1">
+                <span className="text-[10px] uppercase tracking-wider text-slate-400 mt-1">
                   Secs
                 </span>
               </div>
             </div>
           ) : (
-            <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-2.5 rounded-xl text-center font-medium text-xs flex items-center justify-center gap-1.5">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+            <div className="bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 p-2.5 rounded-xl text-center font-medium text-xs flex items-center justify-center gap-1.5">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
               Obligation completely cleared! Zero debt remaining.
             </div>
           )}
 
           {commitment.notes && (
-            <p className="text-xs text-neutral-500 italic mt-2.5 line-clamp-2">
+            <p className="text-xs text-slate-500 dark:text-slate-400 italic mt-2.5 line-clamp-2">
               &ldquo;{commitment.notes}&rdquo;
             </p>
           )}
 
           {commitment.extensionCount > 0 && (
-            <div className="text-[11px] text-amber-700 bg-amber-50/60 rounded-md px-2 py-0.5 mt-2 inline-block">
+            <div className="text-[11px] text-amber-700 dark:text-[#E5B93C] font-medium mt-2">
               Revised {commitment.extensionCount}{' '}
               {commitment.extensionCount === 1 ? 'time' : 'times'}
             </div>
@@ -249,21 +254,23 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
       </div>
 
       {/* Card Action Footer */}
-      <div className="p-3 bg-neutral-50/80 border-t border-neutral-100 flex items-center justify-between gap-2">
+      <div className="p-3 bg-slate-50/80 dark:bg-[#10182B] border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
         {currentAmount > 0 && onRecordPaymentClick && (
           <button
+            type="button"
             onClick={onRecordPaymentClick}
-            className="flex-1 bg-neutral-900 hover:bg-black text-white text-xs font-semibold py-2 px-3 rounded-lg transition-colors flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+            className="flex-1 min-h-[40px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white text-xs font-semibold py-2 px-3 rounded-xl transition-colors flex items-center justify-center gap-1.5 shadow-xs cursor-pointer whitespace-nowrap"
           >
-            Record Payment
+            <span>Record Payment</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         )}
 
         {commitment.status === 'extension_requested' && onApproveExtensionClick && canManage && (
           <button
+            type="button"
             onClick={onApproveExtensionClick}
-            className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold py-2 px-3 rounded-lg transition-colors cursor-pointer"
+            className="min-h-[40px] bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold py-2 px-3 rounded-xl transition-colors cursor-pointer whitespace-nowrap"
           >
             Approve Extension
           </button>
@@ -271,8 +278,9 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
 
         {currentAmount > 0 && onRequestExtensionClick && (
           <button
+            type="button"
             onClick={onRequestExtensionClick}
-            className="text-neutral-600 hover:text-neutral-900 hover:bg-neutral-200/60 text-xs font-medium py-2 px-2.5 rounded-lg transition-colors cursor-pointer"
+            className="min-h-[40px] text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-[#18233D] text-xs font-medium py-2 px-2.5 rounded-xl transition-colors cursor-pointer whitespace-nowrap"
           >
             Request Extension
           </button>

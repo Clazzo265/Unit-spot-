@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
+import { useToast } from '../../context/ToastContext';
 import { Group, GroupMember, StoveType, User } from '../../types';
 import { formatMWK } from '../../utils/financialCalculations';
 import {
@@ -9,6 +10,8 @@ import {
   resolveMemberInfo,
 } from '../../utils/financialConfig';
 import { canUserManageGroup } from '../../utils/centralizedFinancialAdmin';
+import { Modal } from '../ui/Modal';
+import { EmptyState } from '../ui/EmptyState';
 import {
   Building2,
   Users,
@@ -21,7 +24,6 @@ import {
   ShieldCheck,
   AlertCircle,
   AlertTriangle,
-  X,
   Edit3,
   Archive,
   ArrowRightLeft,
@@ -29,6 +31,7 @@ import {
   Zap,
   UserCheck,
   PauseCircle,
+  Search,
 } from 'lucide-react';
 import { MemberWelcomeModal } from './MemberWelcomeModal';
 
@@ -51,6 +54,7 @@ export const GroupManagementView: React.FC = () => {
     removeMemberFromGroup,
     currentUser,
   } = useApp();
+  const { showToast } = useToast();
 
   const isGroupAdmin = canUserManageGroup(currentUser?.role);
 
@@ -62,7 +66,6 @@ export const GroupManagementView: React.FC = () => {
     'All monthly contributions due by the agreed deadline. Partial payments require a clear commitment deadline.'
   );
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
-  const [feedbackBanner, setFeedbackBanner] = useState<string | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
   // Edit Group Modal
@@ -120,10 +123,11 @@ export const GroupManagementView: React.FC = () => {
   } | null>(null);
   const [suspendReason, setSuspendReason] = useState('');
 
-  // Directory filter
+  // Directory filter & live search
   const [directoryFilter, setDirectoryFilter] = useState<'active' | 'suspended' | 'departed'>(
     'active'
   );
+  const [memberSearch, setMemberSearch] = useState('');
 
   const activeGroups = useMemo(
     () => groups.filter((g) => g.status !== 'archived'),
@@ -153,16 +157,28 @@ export const GroupManagementView: React.FC = () => {
     );
   }, [currentGroup, groupMembers]);
 
-  const displayedMembers =
-    directoryFilter === 'active'
-      ? activeMembers
-      : directoryFilter === 'suspended'
-        ? suspendedMembers
-        : departedMembers;
+  const displayedMembers = useMemo(() => {
+    const base =
+      directoryFilter === 'active'
+        ? activeMembers
+        : directoryFilter === 'suspended'
+          ? suspendedMembers
+          : departedMembers;
+
+    const q = memberSearch.trim().toLowerCase();
+    if (!q) return base;
+
+    return base.filter((m) =>
+      `${m.name} ${m.email} ${m.roomNumber || ''} ${m.memberRefId || ''} ${m.phone || ''}`
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [directoryFilter, activeMembers, suspendedMembers, departedMembers, memberSearch]);
 
   const handleCopy = (code: string) => {
     navigator.clipboard.writeText(code);
     setCopiedCode(code);
+    showToast('Group Code Copied', { message: `Join code ${code} copied to clipboard.` });
     setTimeout(() => setCopiedCode(null), 2000);
   };
 
@@ -178,10 +194,12 @@ export const GroupManagementView: React.FC = () => {
       defaultCurrency: 'MWK',
     });
 
+    showToast('Group Created', {
+      message: `${name.trim()} is now your active financial circle.`,
+    });
     setName('');
     setDescription('');
     setIsCreating(false);
-    setFeedbackBanner('New financial group created successfully.');
   };
 
   const openEditGroup = () => {
@@ -205,12 +223,13 @@ export const GroupManagementView: React.FC = () => {
       return;
     }
     setIsEditingGroup(false);
-    setFeedbackBanner(`Group "${editGroupName.trim()}" updated.`);
+    showToast('Group Updated', { message: `Changes saved for "${editGroupName.trim()}".` });
   };
 
   const handleConfirmArchive = (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentGroup) return;
+    const groupTitle = currentGroup.name;
     const res = archiveGroup(currentGroup.id, archiveReason);
     if (!res.success) {
       setErrorBanner(res.error || 'Could not archive group.');
@@ -218,7 +237,10 @@ export const GroupManagementView: React.FC = () => {
     }
     setIsArchivingGroup(false);
     setArchiveReason('');
-    setFeedbackBanner(`Group "${currentGroup.name}" archived safely.`);
+    showToast('Group Archived', {
+      message: `"${groupTitle}" moved to archived state with ledgers preserved.`,
+      variant: 'info',
+    });
   };
 
   const handleConfirmTransfer = (e: React.FormEvent) => {
@@ -232,7 +254,9 @@ export const GroupManagementView: React.FC = () => {
     setIsTransferring(false);
     setTransferCandidateId('');
     setTransferReason('');
-    setFeedbackBanner(`Ownership of "${currentGroup.name}" transferred and logged.`);
+    showToast('Ownership Transferred', {
+      message: `Ownership of "${currentGroup.name}" updated and audited.`,
+    });
   };
 
   const handleAddMember = (e: React.FormEvent) => {
@@ -267,6 +291,9 @@ export const GroupManagementView: React.FC = () => {
     }
 
     if (result.user) {
+      showToast('Member Enrolled', {
+        message: `${result.user.name} added to ${currentGroup?.name}.`,
+      });
       setNewlyAddedMember(result.user);
       setNewlyAddedStoveType(newMemberStoveType);
       setIsWelcomeModalOpen(true);
@@ -289,9 +316,9 @@ export const GroupManagementView: React.FC = () => {
       setStoveModalError(res.error || 'Failed to update stove classification.');
       return;
     }
-    setFeedbackBanner(
-      `Stove classification for ${stoveModalMember.name} set to ${STOVE_TYPE_LABELS[stoveModalType]} (${formatMWK(RATES[stoveModalType])}).`
-    );
+    showToast('Stove Tier Updated', {
+      message: `${stoveModalMember.name}: ${STOVE_TYPE_LABELS[stoveModalType]} (${formatMWK(RATES[stoveModalType])}).`,
+    });
     setStoveModalMember(null);
     setStoveModalReason('');
   };
@@ -300,9 +327,10 @@ export const GroupManagementView: React.FC = () => {
     if (!memberToRemove) return;
     const ok = removeMemberFromGroup(memberToRemove.memberId, removalReason);
     if (ok) {
-      setFeedbackBanner(
-        `${memberToRemove.name} moved to Departed / Removed. Financial history preserved.`
-      );
+      showToast('Member Marked Departed', {
+        message: `${memberToRemove.name} moved to Moved Out / Removed. Financial history preserved.`,
+        variant: 'info',
+      });
     }
     setMemberToRemove(null);
     setRemovalReason('Tenant moved out / lease ended');
@@ -315,7 +343,10 @@ export const GroupManagementView: React.FC = () => {
     if (!res.success) {
       setErrorBanner(res.error || 'Could not suspend member.');
     } else {
-      setFeedbackBanner(`${memberToSuspend.name} suspended.`);
+      showToast('Member Suspended', {
+        message: `${memberToSuspend.name} moved to Suspended directory.`,
+        variant: 'info',
+      });
     }
     setMemberToSuspend(null);
     setSuspendReason('');
@@ -328,7 +359,9 @@ export const GroupManagementView: React.FC = () => {
     if (!res.success) {
       setErrorBanner(res.error || 'Could not change role.');
     } else {
-      setFeedbackBanner(`Updated role for ${roleModalMember.name} to ${roleModalValue}.`);
+      showToast('Role Updated', {
+        message: `${roleModalMember.name} is now ${roleModalValue}.`,
+      });
     }
     setRoleModalMember(null);
     setRoleModalReason('');
@@ -339,10 +372,10 @@ export const GroupManagementView: React.FC = () => {
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-neutral-900 tracking-tight">
-            Group Management & Directory
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+            Group Management &amp; Directory
           </h2>
-          <p className="text-sm text-neutral-500 mt-0.5">
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
             Manage shared houses, student hostels, stove contribution tiers, and resident lifecycles
           </p>
         </div>
@@ -351,34 +384,24 @@ export const GroupManagementView: React.FC = () => {
           <button
             type="button"
             onClick={() => setIsCreating(true)}
-            className="inline-flex items-center gap-2 bg-neutral-900 hover:bg-black text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer whitespace-nowrap"
+            className="min-h-[44px] inline-flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer whitespace-nowrap"
           >
-            <Plus className="w-4 h-4 text-[#D5A52B]" />
+            <Plus className="w-4 h-4 text-[#E5B93C] dark:text-white" />
             <span>Create New Group</span>
           </button>
         )}
       </div>
 
-      {feedbackBanner && (
-        <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between text-xs text-emerald-900">
-          <span className="font-semibold">{feedbackBanner}</span>
-          <button
-            type="button"
-            onClick={() => setFeedbackBanner(null)}
-            className="font-bold text-emerald-700 hover:text-emerald-950 cursor-pointer"
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
-
       {errorBanner && (
-        <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-between text-xs text-rose-900">
+        <div
+          role="alert"
+          className="p-3.5 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 rounded-xl flex items-center justify-between text-xs text-rose-900 dark:text-rose-200"
+        >
           <span className="font-semibold">{errorBanner}</span>
           <button
             type="button"
             onClick={() => setErrorBanner(null)}
-            className="font-bold text-rose-700 hover:text-rose-950 cursor-pointer"
+            className="min-h-[36px] px-2 font-bold text-rose-700 dark:text-rose-300 hover:underline cursor-pointer"
           >
             Dismiss
           </button>
@@ -387,22 +410,13 @@ export const GroupManagementView: React.FC = () => {
 
       {/* Group Selector Cards */}
       {activeGroups.length === 0 ? (
-        <div className="bg-white rounded-2xl border border-neutral-200 p-10 text-center text-xs text-neutral-500">
-          <Building2 className="w-10 h-10 text-neutral-300 mx-auto mb-2" />
-          <h4 className="font-bold text-neutral-800 text-sm">No Active Financial Groups</h4>
-          <p className="mt-1 max-w-sm mx-auto text-neutral-500">
-            Create your first group to manage shared utilities, accommodation bills, or department funds.
-          </p>
-          {isGroupAdmin && (
-            <button
-              type="button"
-              onClick={() => setIsCreating(true)}
-              className="mt-4 bg-neutral-900 text-white font-bold px-4 py-2 rounded-xl text-xs cursor-pointer"
-            >
-              Create First Group
-            </button>
-          )}
-        </div>
+        <EmptyState
+          icon={Building2}
+          title="No Active Financial Groups"
+          description="Create your first group to manage shared utilities, accommodation bills, or department funds."
+          actionLabel={isGroupAdmin ? 'Create First Group' : undefined}
+          onAction={isGroupAdmin ? () => setIsCreating(true) : undefined}
+        />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {activeGroups.map((g) => {
@@ -417,41 +431,45 @@ export const GroupManagementView: React.FC = () => {
                 onClick={() => setCurrentGroup(g)}
                 className={`p-5 rounded-2xl border transition-all cursor-pointer relative ${
                   isSelected
-                    ? 'border-neutral-900 bg-neutral-900 text-white shadow-md ring-2 ring-neutral-900'
-                    : 'border-neutral-200 bg-white hover:border-neutral-300 text-neutral-900'
+                    ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-[#131D33] text-white shadow-md ring-1 ring-slate-900 dark:ring-blue-500/60'
+                    : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1424] hover:border-slate-300 dark:hover:border-slate-700 text-slate-900 dark:text-slate-100'
                 }`}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
                     <div
-                      className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold ${
-                        isSelected ? 'bg-white/10 text-white' : 'bg-neutral-100 text-neutral-900'
+                      className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold shrink-0 ${
+                        isSelected
+                          ? 'bg-white/10 dark:bg-blue-500/20 text-white'
+                          : 'bg-slate-100 dark:bg-[#11192C] text-slate-800 dark:text-slate-200'
                       }`}
                     >
                       <Building2 className="w-5 h-5" />
                     </div>
-                    <div>
-                      <h3 className="font-bold text-base leading-tight">{g.name}</h3>
+                    <div className="min-w-0">
+                      <h3 className="font-bold text-base leading-tight truncate">{g.name}</h3>
                       <span
                         className={`text-[11px] uppercase tracking-wider font-semibold ${
-                          isSelected ? 'text-neutral-400' : 'text-neutral-500'
+                          isSelected
+                            ? 'text-slate-300 dark:text-cyan-300'
+                            : 'text-slate-500 dark:text-slate-400'
                         }`}
                       >
-                        {g.category} • {g.defaultCurrency}
+                        {g.category} · {g.defaultCurrency}
                       </span>
                     </div>
                   </div>
 
                   {isSelected && (
-                    <span className="bg-emerald-600 text-white text-[10px] font-bold px-2.5 py-0.5 rounded-md uppercase tracking-wider whitespace-nowrap">
-                      Active Group
+                    <span className="text-[11px] font-bold text-emerald-400 whitespace-nowrap">
+                      Active
                     </span>
                   )}
                 </div>
 
                 <p
                   className={`text-xs mt-3 line-clamp-2 ${
-                    isSelected ? 'text-neutral-300' : 'text-neutral-600'
+                    isSelected ? 'text-slate-300' : 'text-slate-600 dark:text-slate-400'
                   }`}
                 >
                   {g.description || 'No description provided.'}
@@ -459,7 +477,9 @@ export const GroupManagementView: React.FC = () => {
 
                 <div
                   className={`mt-4 pt-3 border-t flex items-center justify-between text-xs ${
-                    isSelected ? 'border-white/10 text-neutral-300' : 'border-neutral-100 text-neutral-500'
+                    isSelected
+                      ? 'border-white/10 text-slate-300'
+                      : 'border-slate-100 dark:border-slate-800 text-slate-500 dark:text-slate-400'
                   }`}
                 >
                   <div className="flex items-center gap-1.5 tabular-nums">
@@ -473,10 +493,10 @@ export const GroupManagementView: React.FC = () => {
                       e.stopPropagation();
                       handleCopy(g.joinCode);
                     }}
-                    className={`inline-flex items-center gap-1 font-mono text-[11px] px-2 py-0.5 rounded-md border cursor-pointer ${
+                    className={`min-h-[36px] inline-flex items-center gap-1 font-mono text-[11px] px-2.5 py-1 rounded-lg border cursor-pointer ${
                       isSelected
                         ? 'border-white/20 bg-white/10 text-white hover:bg-white/20'
-                        : 'border-neutral-200 bg-neutral-50 text-neutral-700 hover:bg-neutral-100'
+                        : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#11192C] text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#18233D]'
                     }`}
                     title="Click to copy group code"
                   >
@@ -496,18 +516,22 @@ export const GroupManagementView: React.FC = () => {
 
       {/* Active Group Details & Member Directory */}
       {currentGroup && (
-        <div className="bg-white rounded-2xl border border-neutral-200 p-6 shadow-xs space-y-4">
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-neutral-100">
+        <div className="bg-white dark:bg-[#0D1424] rounded-2xl border border-slate-200 dark:border-slate-800 p-4 sm:p-6 shadow-xs space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-100 dark:border-slate-800">
             <div>
               <div className="flex items-center gap-2 text-xs">
-                <span className="font-bold uppercase tracking-wider text-neutral-400">
+                <span className="font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
                   Directory
                 </span>
-                <span className="text-neutral-300">•</span>
-                <span className="font-semibold text-neutral-600">{currentGroup.name}</span>
+                <span className="text-slate-300 dark:text-slate-600" aria-hidden="true">
+                  ·
+                </span>
+                <span className="font-semibold text-slate-600 dark:text-slate-300">
+                  {currentGroup.name}
+                </span>
               </div>
-              <h3 className="text-xl font-bold text-neutral-900 mt-1">
-                Group Members & Stove Rate Tiers
+              <h3 className="text-xl font-bold text-slate-900 dark:text-white mt-1">
+                Group Members &amp; Stove Rate Tiers
               </h3>
             </div>
 
@@ -520,7 +544,7 @@ export const GroupManagementView: React.FC = () => {
                       setAddMemberError(null);
                       setIsAddingMember(true);
                     }}
-                    className="inline-flex items-center gap-1.5 bg-neutral-900 hover:bg-black text-white px-3.5 py-2 rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer whitespace-nowrap"
+                    className="min-h-[44px] inline-flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer whitespace-nowrap"
                   >
                     <UserPlus className="w-3.5 h-3.5" />
                     <span>Add Member</span>
@@ -528,7 +552,7 @@ export const GroupManagementView: React.FC = () => {
                   <button
                     type="button"
                     onClick={openEditGroup}
-                    className="inline-flex items-center gap-1.5 bg-white hover:bg-neutral-50 text-neutral-800 border border-neutral-200 px-3 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                    className="min-h-[44px] inline-flex items-center gap-1.5 bg-white dark:bg-[#11192C] hover:bg-slate-50 dark:hover:bg-[#18233D] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 px-3 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
                   >
                     <Edit3 className="w-3.5 h-3.5" />
                     <span>Edit Group</span>
@@ -536,7 +560,7 @@ export const GroupManagementView: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => setIsTransferring(true)}
-                    className="inline-flex items-center gap-1.5 bg-white hover:bg-neutral-50 text-neutral-800 border border-neutral-200 px-3 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                    className="min-h-[44px] inline-flex items-center gap-1.5 bg-white dark:bg-[#11192C] hover:bg-slate-50 dark:hover:bg-[#18233D] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 px-3 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
                   >
                     <ArrowRightLeft className="w-3.5 h-3.5" />
                     <span>Transfer Ownership</span>
@@ -544,7 +568,7 @@ export const GroupManagementView: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => setIsArchivingGroup(true)}
-                    className="inline-flex items-center gap-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 px-3 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                    className="min-h-[44px] inline-flex items-center gap-1.5 bg-rose-50 dark:bg-rose-950/50 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 px-3 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
                   >
                     <Archive className="w-3.5 h-3.5" />
                     <span>Archive</span>
@@ -555,7 +579,7 @@ export const GroupManagementView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => handleCopy(currentGroup.joinCode)}
-                className="inline-flex items-center gap-1.5 bg-neutral-50 hover:bg-neutral-100 text-neutral-800 border border-neutral-200 px-3 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                className="min-h-[44px] inline-flex items-center gap-1.5 bg-slate-50 dark:bg-[#11192C] hover:bg-slate-100 dark:hover:bg-[#18233D] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 px-3 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
               >
                 <Share2 className="w-3.5 h-3.5" />
                 <span>
@@ -565,969 +589,1116 @@ export const GroupManagementView: React.FC = () => {
             </div>
           </div>
 
-          {/* Directory Tabs */}
-          <div className="flex flex-wrap items-center gap-2 border-b border-neutral-100 pb-3">
-            <button
-              type="button"
-              onClick={() => setDirectoryFilter('active')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                directoryFilter === 'active'
-                  ? 'bg-neutral-900 text-white'
-                  : 'text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100'
-              }`}
-            >
-              Active ({activeMembers.length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setDirectoryFilter('suspended')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                directoryFilter === 'suspended'
-                  ? 'bg-neutral-900 text-white'
-                  : 'text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100'
-              }`}
-            >
-              Suspended ({suspendedMembers.length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setDirectoryFilter('departed')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                directoryFilter === 'departed'
-                  ? 'bg-neutral-900 text-white'
-                  : 'text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100'
-              }`}
-            >
-              Moved Out / Removed ({departedMembers.length})
-            </button>
+          {/* Directory Tabs + Live Member Search */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setDirectoryFilter('active')}
+                className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
+                  directoryFilter === 'active'
+                    ? 'bg-slate-900 dark:bg-blue-600 text-white'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#131D33]'
+                }`}
+              >
+                Active ({activeMembers.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setDirectoryFilter('suspended')}
+                className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
+                  directoryFilter === 'suspended'
+                    ? 'bg-slate-900 dark:bg-blue-600 text-white'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#131D33]'
+                }`}
+              >
+                Suspended ({suspendedMembers.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setDirectoryFilter('departed')}
+                className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
+                  directoryFilter === 'departed'
+                    ? 'bg-slate-900 dark:bg-blue-600 text-white'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#131D33]'
+                }`}
+              >
+                Moved Out / Removed ({departedMembers.length})
+              </button>
+            </div>
+
+            <div className="relative w-full sm:w-64">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={memberSearch}
+                onChange={(e) => setMemberSearch(e.target.value)}
+                placeholder="Search name, email, room, ID..."
+                aria-label="Search members"
+                className="w-full min-h-[40px] bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl pl-9 pr-3 py-1.5 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none"
+              />
+            </div>
           </div>
 
-          {/* Members Table */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="border-b border-neutral-100 text-neutral-400 uppercase tracking-wider text-[11px]">
-                  <th className="pb-3 font-semibold">Member</th>
-                  <th className="pb-3 font-semibold">Stove Tier & Rate</th>
-                  <th className="pb-3 font-semibold">Role</th>
-                  <th className="pb-3 font-semibold">Phone</th>
-                  <th className="pb-3 font-semibold">Unit / Room</th>
-                  <th className="pb-3 font-semibold">Status</th>
-                  <th className="pb-3 font-semibold text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-neutral-100 text-neutral-800">
-                {displayedMembers.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="py-8 text-center text-neutral-400">
-                      {directoryFilter === 'active'
-                        ? 'No active members enrolled in this group yet.'
-                        : directoryFilter === 'suspended'
-                          ? 'No suspended members.'
-                          : 'No departed or removed members recorded.'}
-                    </td>
-                  </tr>
-                ) : (
-                  displayedMembers.map((member) => {
-                    const resolved = resolveMemberInfo(member.id, groupMembers, users);
-                    const isSelf = member.userId === currentUser?.id || member.id === currentUser?.id;
-                    const hasStove = isValidStoveType(member.stoveType);
+          {displayedMembers.length === 0 ? (
+            <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-400 space-y-2">
+              <p className="font-semibold text-slate-700 dark:text-slate-300">
+                {memberSearch.trim()
+                  ? `No members match "${memberSearch.trim()}".`
+                  : directoryFilter === 'active'
+                    ? 'No active members enrolled in this group yet.'
+                    : directoryFilter === 'suspended'
+                      ? 'No suspended members.'
+                      : 'No departed or removed members recorded.'}
+              </p>
+              {memberSearch.trim() && (
+                <button
+                  type="button"
+                  onClick={() => setMemberSearch('')}
+                  className="text-blue-600 dark:text-cyan-400 font-semibold hover:underline cursor-pointer"
+                >
+                  Clear search
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              {/* Mobile Card View (< md) */}
+              <div className="md:hidden space-y-3">
+                {displayedMembers.map((member) => {
+                  const resolved = resolveMemberInfo(member.id, groupMembers, users);
+                  const isSelf =
+                    member.userId === currentUser?.id || member.id === currentUser?.id;
+                  const hasStove = isValidStoveType(member.stoveType);
 
-                    return (
-                      <tr key={member.id} className="hover:bg-neutral-50/50 transition-colors">
-                        <td className="py-3.5 pr-3">
-                          <div className="flex items-center gap-2.5">
-                            {resolved?.avatarUrl ? (
-                              <img
-                                src={resolved.avatarUrl}
-                                alt={member.name}
-                                className="w-8 h-8 rounded-full object-cover border border-neutral-200"
-                              />
-                            ) : (
-                              <div className="w-8 h-8 rounded-full bg-neutral-200 text-neutral-800 font-bold flex items-center justify-center text-xs shrink-0">
-                                {member.name ? member.name.charAt(0).toUpperCase() : 'M'}
-                              </div>
-                            )}
-                            <div>
-                              <div className="font-bold text-neutral-900 flex items-center gap-1.5 flex-wrap">
-                                <span>{member.name}</span>
-                                {member.memberRefId && (
-                                  <span className="font-mono text-[10px] bg-neutral-100 text-neutral-700 border border-neutral-200 px-1.5 py-0.5 rounded font-semibold">
-                                    {member.memberRefId}
-                                  </span>
-                                )}
-                                {isSelf && (
-                                  <span className="text-[10px] bg-neutral-900 text-white px-1.5 py-0.5 rounded font-semibold">
-                                    You
-                                  </span>
-                                )}
-                              </div>
-                              <div className="text-[11px] text-neutral-500">{member.email}</div>
+                  return (
+                    <div
+                      key={member.id}
+                      className="p-4 rounded-2xl bg-slate-50/70 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 space-y-3"
+                    >
+                      <div className="flex items-start justify-between gap-2.5">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          {resolved?.avatarUrl ? (
+                            <img
+                              src={resolved.avatarUrl}
+                              alt={member.name}
+                              referrerPolicy="no-referrer"
+                              className="w-9 h-9 rounded-full object-cover border border-slate-200 dark:border-slate-700 shrink-0"
+                            />
+                          ) : (
+                            <div className="w-9 h-9 rounded-full bg-slate-200 dark:bg-[#18233D] text-slate-800 dark:text-slate-100 font-bold flex items-center justify-center text-xs shrink-0">
+                              {member.name ? member.name.charAt(0).toUpperCase() : 'M'}
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <div className="font-bold text-sm text-slate-900 dark:text-white truncate">
+                              {member.name} {isSelf ? '(You)' : ''}
+                            </div>
+                            <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                              {member.email}
                             </div>
                           </div>
-                        </td>
+                        </div>
+                        <span className="text-[11px] font-semibold capitalize text-slate-600 dark:text-slate-300 shrink-0">
+                          {member.roleInGroup}
+                        </span>
+                      </div>
 
-                        <td className="py-3.5 pr-3 tabular-nums">
-                          {hasStove ? (
-                            <div className="flex items-center gap-1.5">
-                              <span
-                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold border whitespace-nowrap ${
-                                  member.stoveType === 'electric'
-                                    ? 'bg-amber-50 text-amber-900 border-amber-200'
-                                    : 'bg-neutral-100 text-neutral-800 border-neutral-200'
-                                }`}
-                              >
-                                {member.stoveType === 'electric' ? (
-                                  <Zap className="w-3 h-3 text-amber-600" />
-                                ) : (
-                                  <Flame className="w-3 h-3 text-neutral-600" />
-                                )}
-                                {STOVE_TYPE_LABELS[member.stoveType!]} •{' '}
-                                {formatMWK(RATES[member.stoveType!])}
-                              </span>
-                            </div>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-rose-50 text-rose-800 border border-rose-200 whitespace-nowrap">
-                              <AlertTriangle className="w-3 h-3" />
-                              Review Needed
-                            </span>
-                          )}
-                        </td>
-
-                        <td className="py-3.5 pr-3">
-                          <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold capitalize ${
-                              member.roleInGroup === 'admin'
-                                ? 'bg-neutral-900 text-white'
-                                : member.roleInGroup === 'treasurer'
-                                  ? 'bg-amber-100 text-amber-900'
-                                  : 'bg-neutral-100 text-neutral-700'
-                            }`}
-                          >
-                            {member.roleInGroup}
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600 dark:text-slate-300 tabular-nums">
+                        {hasStove ? (
+                          <span className="inline-flex items-center gap-1 font-semibold">
+                            {member.stoveType === 'electric' ? (
+                              <Zap className="w-3.5 h-3.5 text-[#D5A52B]" />
+                            ) : (
+                              <Flame className="w-3.5 h-3.5 text-slate-500" />
+                            )}
+                            {STOVE_TYPE_LABELS[member.stoveType!]} ·{' '}
+                            {formatMWK(RATES[member.stoveType!])}
                           </span>
-                        </td>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-rose-600 dark:text-rose-400 font-bold">
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            Stove Review Needed
+                          </span>
+                        )}
+                        <span aria-hidden="true">·</span>
+                        <span>{member.roomNumber || 'Main unit'}</span>
+                        {member.phone && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-mono text-[11px]">{member.phone}</span>
+                          </>
+                        )}
+                      </div>
 
-                        <td className="py-3.5 pr-3 font-mono text-[11px] text-neutral-600 whitespace-nowrap">
-                          {member.phone || '—'}
-                        </td>
-
-                        <td className="py-3.5 pr-3 text-neutral-600">
-                          {member.roomNumber || 'Main unit'}
-                        </td>
-
-                        <td className="py-3.5 pr-3">
-                          {member.status === 'active' ? (
-                            <span className="text-emerald-700 font-semibold">Active</span>
-                          ) : member.status === 'suspended' ? (
-                            <span
-                              className="text-amber-700 font-semibold"
-                              title={member.suspensionReason}
-                            >
-                              Suspended
-                            </span>
-                          ) : (
-                            <span
-                              className="text-neutral-500 font-semibold"
-                              title={member.removalReason || member.departureReason}
-                            >
-                              {member.status === 'departed' ? 'Moved Out' : 'Removed'}
-                            </span>
-                          )}
-                        </td>
-
-                        <td className="py-3.5 text-right">
-                          {isGroupAdmin && (
-                            <div className="inline-flex items-center gap-1.5 justify-end flex-wrap">
-                              {member.status === 'active' && (
+                      {isGroupAdmin && (
+                        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200/80 dark:border-slate-800">
+                          {member.status === 'active' && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setStoveModalMember(member);
+                                  setStoveModalType(
+                                    isValidStoveType(member.stoveType)
+                                      ? member.stoveType
+                                      : 'non_electric'
+                                  );
+                                  setStoveModalReason('');
+                                  setStoveModalError('');
+                                }}
+                                className="min-h-[40px] px-3 py-1.5 rounded-xl bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer"
+                              >
+                                {hasStove ? 'Stove Tier' : 'Classify Stove'}
+                              </button>
+                              {!isSelf && (
                                 <>
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      setStoveModalMember(member);
-                                      setStoveModalType(
-                                        isValidStoveType(member.stoveType)
-                                          ? member.stoveType
-                                          : 'non_electric'
-                                      );
-                                      setStoveModalReason('');
-                                      setStoveModalError('');
+                                      setRoleModalMember(member);
+                                      setRoleModalValue(member.roleInGroup);
+                                      setRoleModalReason('');
                                     }}
-                                    className="text-[11px] font-semibold text-neutral-700 hover:text-neutral-950 bg-neutral-100 hover:bg-neutral-200 px-2 py-1 rounded-lg cursor-pointer whitespace-nowrap"
+                                    className="min-h-[40px] px-3 py-1.5 rounded-xl bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer"
                                   >
-                                    {hasStove ? 'Stove Tier' : 'Classify Stove'}
+                                    Role
                                   </button>
-
-                                  {!isSelf && (
-                                    <>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setRoleModalMember(member);
-                                          setRoleModalValue(member.roleInGroup);
-                                          setRoleModalReason('');
-                                        }}
-                                        className="text-[11px] font-semibold text-neutral-700 hover:text-neutral-950 bg-neutral-100 hover:bg-neutral-200 px-2 py-1 rounded-lg cursor-pointer whitespace-nowrap"
-                                      >
-                                        Role
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          setMemberToSuspend({
-                                            memberId: member.id,
-                                            name: member.name,
-                                          })
-                                        }
-                                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 px-2 py-1 rounded-lg border border-amber-200 cursor-pointer whitespace-nowrap"
-                                      >
-                                        <PauseCircle className="w-3 h-3" />
-                                        <span>Suspend</span>
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          setMemberToRemove({
-                                            memberId: member.id,
-                                            name: member.name,
-                                          })
-                                        }
-                                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 px-2 py-1 rounded-lg border border-rose-200 cursor-pointer whitespace-nowrap"
-                                      >
-                                        <UserMinus className="w-3 h-3" />
-                                        <span>Remove</span>
-                                      </button>
-                                    </>
-                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setMemberToSuspend({
+                                        memberId: member.id,
+                                        name: member.name,
+                                      })
+                                    }
+                                    className="min-h-[40px] px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-xs font-semibold text-amber-800 dark:text-amber-300 cursor-pointer"
+                                  >
+                                    Suspend
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setMemberToRemove({
+                                        memberId: member.id,
+                                        name: member.name,
+                                      })
+                                    }
+                                    className="min-h-[40px] px-3 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-xs font-semibold text-rose-700 dark:text-rose-300 cursor-pointer"
+                                  >
+                                    Remove
+                                  </button>
                                 </>
                               )}
-
-                              {member.status === 'suspended' && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const res = reinstateMember(
-                                      member.id,
-                                      'Reinstated by administrator'
-                                    );
-                                    if (res.success) {
-                                      setFeedbackBanner(`${member.name} reinstated to Active.`);
-                                    }
-                                  }}
-                                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 rounded-lg border border-emerald-200 cursor-pointer whitespace-nowrap"
-                                >
-                                  <UserCheck className="w-3 h-3" />
-                                  <span>Reinstate</span>
-                                </button>
-                              )}
-
-                              {(member.status === 'departed' || member.status === 'removed') && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setNewMemberName(member.name);
-                                    setNewMemberEmail(member.email);
-                                    setNewMemberPhone(member.phone || '+265 ');
-                                    setNewMemberRole(member.roleInGroup);
-                                    setNewMemberStoveType(
-                                      isValidStoveType(member.stoveType) ? member.stoveType : ''
-                                    );
-                                    setNewMemberRoom(member.roomNumber || '');
-                                    setAddMemberError(null);
-                                    setIsAddingMember(true);
-                                  }}
-                                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 rounded-lg border border-emerald-200 cursor-pointer whitespace-nowrap"
-                                >
-                                  <span>Re-enroll</span>
-                                </button>
-                              )}
-                            </div>
+                            </>
                           )}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+                          {member.status === 'suspended' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const res = reinstateMember(
+                                  member.id,
+                                  'Reinstated by administrator'
+                                );
+                                if (res.success) {
+                                  showToast('Member Reinstated', {
+                                    message: `${member.name} is active again.`,
+                                  });
+                                }
+                              }}
+                              className="min-h-[40px] px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-xs font-semibold text-emerald-700 dark:text-emerald-300 cursor-pointer"
+                            >
+                              Reinstate
+                            </button>
+                          )}
+                          {(member.status === 'departed' || member.status === 'removed') && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setNewMemberName(member.name);
+                                setNewMemberEmail(member.email);
+                                setNewMemberPhone(member.phone || '+265 ');
+                                setNewMemberRole(member.roleInGroup);
+                                setNewMemberStoveType(
+                                  isValidStoveType(member.stoveType) ? member.stoveType : ''
+                                );
+                                setNewMemberRoom(member.roomNumber || '');
+                                setAddMemberError(null);
+                                setIsAddingMember(true);
+                              }}
+                              className="min-h-[40px] px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-xs font-semibold text-emerald-700 dark:text-emerald-300 cursor-pointer"
+                            >
+                              Re-enroll
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Desktop Table View (>= md) */}
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[11px]">
+                      <th className="pb-3 font-semibold">Member</th>
+                      <th className="pb-3 font-semibold">Stove Tier &amp; Rate</th>
+                      <th className="pb-3 font-semibold">Role</th>
+                      <th className="pb-3 font-semibold">Phone</th>
+                      <th className="pb-3 font-semibold">Unit / Room</th>
+                      <th className="pb-3 font-semibold">Status</th>
+                      <th className="pb-3 font-semibold text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 text-slate-800 dark:text-slate-200">
+                    {displayedMembers.map((member) => {
+                      const resolved = resolveMemberInfo(member.id, groupMembers, users);
+                      const isSelf =
+                        member.userId === currentUser?.id || member.id === currentUser?.id;
+                      const hasStove = isValidStoveType(member.stoveType);
+
+                      return (
+                        <tr
+                          key={member.id}
+                          className="hover:bg-slate-50/70 dark:hover:bg-[#11192C]/70 transition-colors"
+                        >
+                          <td className="py-3.5 pr-3">
+                            <div className="flex items-center gap-2.5">
+                              {resolved?.avatarUrl ? (
+                                <img
+                                  src={resolved.avatarUrl}
+                                  alt={member.name}
+                                  referrerPolicy="no-referrer"
+                                  className="w-8 h-8 rounded-full object-cover border border-slate-200 dark:border-slate-700"
+                                />
+                              ) : (
+                                <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-[#131D33] text-slate-800 dark:text-slate-100 font-bold flex items-center justify-center text-xs shrink-0">
+                                  {member.name ? member.name.charAt(0).toUpperCase() : 'M'}
+                                </div>
+                              )}
+                              <div>
+                                <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5 flex-wrap">
+                                  <span>{member.name}</span>
+                                  {member.memberRefId && (
+                                    <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                                      · {member.memberRefId}
+                                    </span>
+                                  )}
+                                  {isSelf && (
+                                    <span className="text-[10px] text-blue-600 dark:text-cyan-400 font-bold">
+                                      (You)
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                                  {member.email}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+
+                          <td className="py-3.5 pr-3 tabular-nums">
+                            {hasStove ? (
+                              <span
+                                className={`inline-flex items-center gap-1 text-xs font-semibold whitespace-nowrap ${
+                                  member.stoveType === 'electric'
+                                    ? 'text-amber-700 dark:text-[#E5B93C]'
+                                    : 'text-slate-700 dark:text-slate-300'
+                                }`}
+                              >
+                                {member.stoveType === 'electric' ? (
+                                  <Zap className="w-3.5 h-3.5" />
+                                ) : (
+                                  <Flame className="w-3.5 h-3.5" />
+                                )}
+                                {STOVE_TYPE_LABELS[member.stoveType!]} ·{' '}
+                                {formatMWK(RATES[member.stoveType!])}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-xs font-bold text-rose-600 dark:text-rose-400 whitespace-nowrap">
+                                <AlertTriangle className="w-3.5 h-3.5" />
+                                Review Needed
+                              </span>
+                            )}
+                          </td>
+
+                          <td className="py-3.5 pr-3 capitalize font-semibold text-slate-700 dark:text-slate-300">
+                            {member.roleInGroup}
+                          </td>
+
+                          <td className="py-3.5 pr-3 font-mono text-[11px] text-slate-600 dark:text-slate-400 whitespace-nowrap">
+                            {member.phone || '—'}
+                          </td>
+
+                          <td className="py-3.5 pr-3 text-slate-600 dark:text-slate-400">
+                            {member.roomNumber || 'Main unit'}
+                          </td>
+
+                          <td className="py-3.5 pr-3">
+                            {member.status === 'active' ? (
+                              <span className="text-emerald-700 dark:text-emerald-400 font-semibold">
+                                Active
+                              </span>
+                            ) : member.status === 'suspended' ? (
+                              <span
+                                className="text-amber-700 dark:text-amber-400 font-semibold"
+                                title={member.suspensionReason}
+                              >
+                                Suspended
+                              </span>
+                            ) : (
+                              <span
+                                className="text-slate-500 dark:text-slate-400 font-semibold"
+                                title={member.removalReason || member.departureReason}
+                              >
+                                {member.status === 'departed' ? 'Moved Out' : 'Removed'}
+                              </span>
+                            )}
+                          </td>
+
+                          <td className="py-3.5 text-right">
+                            {isGroupAdmin && (
+                              <div className="inline-flex items-center gap-1.5 justify-end flex-wrap">
+                                {member.status === 'active' && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setStoveModalMember(member);
+                                        setStoveModalType(
+                                          isValidStoveType(member.stoveType)
+                                            ? member.stoveType
+                                            : 'non_electric'
+                                        );
+                                        setStoveModalReason('');
+                                        setStoveModalError('');
+                                      }}
+                                      className="min-h-[34px] text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:text-slate-950 dark:hover:text-white bg-slate-100 dark:bg-[#131D33] hover:bg-slate-200 dark:hover:bg-[#1A2744] px-2.5 py-1 rounded-lg cursor-pointer whitespace-nowrap"
+                                    >
+                                      {hasStove ? 'Stove Tier' : 'Classify Stove'}
+                                    </button>
+
+                                    {!isSelf && (
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setRoleModalMember(member);
+                                            setRoleModalValue(member.roleInGroup);
+                                            setRoleModalReason('');
+                                          }}
+                                          className="min-h-[34px] text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:text-slate-950 dark:hover:text-white bg-slate-100 dark:bg-[#131D33] hover:bg-slate-200 dark:hover:bg-[#1A2744] px-2.5 py-1 rounded-lg cursor-pointer whitespace-nowrap"
+                                        >
+                                          Role
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setMemberToSuspend({
+                                              memberId: member.id,
+                                              name: member.name,
+                                            })
+                                          }
+                                          className="min-h-[34px] inline-flex items-center gap-1 text-[11px] font-semibold text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50 hover:bg-amber-100 dark:hover:bg-amber-900/60 px-2.5 py-1 rounded-lg border border-amber-200 dark:border-amber-800 cursor-pointer whitespace-nowrap"
+                                        >
+                                          <PauseCircle className="w-3 h-3" />
+                                          <span>Suspend</span>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setMemberToRemove({
+                                              memberId: member.id,
+                                              name: member.name,
+                                            })
+                                          }
+                                          className="min-h-[34px] inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/50 hover:bg-rose-100 dark:hover:bg-rose-900/60 px-2.5 py-1 rounded-lg border border-rose-200 dark:border-rose-800 cursor-pointer whitespace-nowrap"
+                                        >
+                                          <UserMinus className="w-3 h-3" />
+                                          <span>Remove</span>
+                                        </button>
+                                      </>
+                                    )}
+                                  </>
+                                )}
+
+                                {member.status === 'suspended' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const res = reinstateMember(
+                                        member.id,
+                                        'Reinstated by administrator'
+                                      );
+                                      if (res.success) {
+                                        showToast('Member Reinstated', {
+                                          message: `${member.name} reinstated to Active.`,
+                                        });
+                                      }
+                                    }}
+                                    className="min-h-[34px] inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 px-2.5 py-1 rounded-lg border border-emerald-200 dark:border-emerald-800 cursor-pointer whitespace-nowrap"
+                                  >
+                                    <UserCheck className="w-3 h-3" />
+                                    <span>Reinstate</span>
+                                  </button>
+                                )}
+
+                                {(member.status === 'departed' || member.status === 'removed') && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setNewMemberName(member.name);
+                                      setNewMemberEmail(member.email);
+                                      setNewMemberPhone(member.phone || '+265 ');
+                                      setNewMemberRole(member.roleInGroup);
+                                      setNewMemberStoveType(
+                                        isValidStoveType(member.stoveType) ? member.stoveType : ''
+                                      );
+                                      setNewMemberRoom(member.roomNumber || '');
+                                      setAddMemberError(null);
+                                      setIsAddingMember(true);
+                                    }}
+                                    className="min-h-[34px] inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 px-2.5 py-1 rounded-lg border border-emerald-200 dark:border-emerald-800 cursor-pointer whitespace-nowrap"
+                                  >
+                                    <span>Re-enroll</span>
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </div>
       )}
 
       {/* Add Member Modal (Requires explicit Stove Type) */}
-      {isAddingMember && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-neutral-200 overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="px-6 py-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50/70">
-              <h3 className="font-bold text-neutral-900 text-base">
-                Register Member in {currentGroup?.name}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setIsAddingMember(false)}
-                className="text-neutral-400 hover:text-neutral-700 p-1 rounded-lg cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleAddMember} className="p-6 space-y-4 text-xs overflow-y-auto">
-              <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-3 text-neutral-700">
-                <span className="font-bold flex items-center gap-1.5 text-neutral-900 mb-0.5">
-                  <ShieldCheck className="w-3.5 h-3.5 text-[#D5A52B]" />
-                  Centralized Member Registration
-                </span>
-                Members do not log in. Administrators record their stove rate tier and email for receipts and statements.
-              </div>
-
-              {addMemberError && (
-                <div className="bg-rose-50 border border-rose-200 rounded-xl p-3 text-rose-800 flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                  <span>{addMemberError}</span>
-                </div>
-              )}
-
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Full Name *
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Kondwani Banda"
-                  value={newMemberName}
-                  onChange={(e) => setNewMemberName(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Email Address *
-                </label>
-                <input
-                  type="email"
-                  placeholder="e.g. kbanda@example.mw"
-                  value={newMemberEmail}
-                  onChange={(e) => setNewMemberEmail(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900"
-                  required
-                />
-              </div>
-
-              {/* Mandatory Stove Classification */}
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1.5">
-                  Stove Classification (Contribution Rate) *
-                </label>
-                <div className="grid grid-cols-2 gap-2.5 tabular-nums">
-                  {(['electric', 'non_electric'] as const).map((tier) => (
-                    <label
-                      key={tier}
-                      className={`p-3 rounded-xl border cursor-pointer transition-all ${
-                        newMemberStoveType === tier
-                          ? 'border-neutral-900 bg-neutral-900 text-white shadow-xs'
-                          : 'border-neutral-200 bg-white hover:bg-neutral-50 text-neutral-800'
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="stoveType"
-                        value={tier}
-                        checked={newMemberStoveType === tier}
-                        onChange={() => setNewMemberStoveType(tier)}
-                        className="sr-only"
-                      />
-                      <div className="font-bold text-xs flex items-center gap-1.5">
-                        {tier === 'electric' ? (
-                          <Zap className="w-3.5 h-3.5 text-[#D5A52B]" />
-                        ) : (
-                          <Flame className="w-3.5 h-3.5 text-[#D5A52B]" />
-                        )}
-                        <span>{STOVE_TYPE_LABELS[tier]}</span>
-                      </div>
-                      <div
-                        className={`text-xs font-extrabold mt-1 ${
-                          newMemberStoveType === tier ? 'text-emerald-300' : 'text-neutral-600'
-                        }`}
-                      >
-                        {formatMWK(RATES[tier])} / cycle
-                      </div>
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Phone Number (Malawi +265)
-                </label>
-                <input
-                  type="text"
-                  placeholder="+265 999 123 456"
-                  value={newMemberPhone}
-                  onChange={(e) => setNewMemberPhone(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-sm font-mono text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                    Role in Group *
-                  </label>
-                  <select
-                    value={newMemberRole}
-                    onChange={(e) =>
-                      setNewMemberRole(e.target.value as 'admin' | 'treasurer' | 'member')
-                    }
-                    className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-xs text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900"
-                  >
-                    <option value="member">Regular Member</option>
-                    <option value="treasurer">Treasurer / Collector</option>
-                    <option value="admin">Group Administrator</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                    Room / Unit
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Room 1"
-                    value={newMemberRoom}
-                    onChange={(e) => setNewMemberRoom(e.target.value)}
-                    className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-xs text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900"
-                  />
-                </div>
-              </div>
-
-              <div className="pt-2 flex items-center justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setIsAddingMember(false)}
-                  className="px-4 py-2 font-semibold text-neutral-600 hover:text-neutral-900 rounded-xl cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="bg-neutral-900 hover:bg-black text-white px-5 py-2 font-bold rounded-xl transition-colors cursor-pointer"
-                >
-                  Register Member
-                </button>
-              </div>
-            </form>
+      <Modal
+        isOpen={isAddingMember}
+        onClose={() => setIsAddingMember(false)}
+        title={`Register Member in ${currentGroup?.name || 'Group'}`}
+        subtitle="Members receive notices via email without creating passwords"
+      >
+        <form onSubmit={handleAddMember} className="space-y-4 text-xs">
+          <div className="bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 rounded-xl p-3 text-slate-700 dark:text-slate-300">
+            <span className="font-bold flex items-center gap-1.5 text-slate-900 dark:text-white mb-0.5">
+              <ShieldCheck className="w-3.5 h-3.5 text-[#D5A52B]" />
+              Centralized Member Registration
+            </span>
+            Administrators record their stove rate tier and email for receipts and statements.
           </div>
-        </div>
-      )}
 
-      {/* Update Stove Classification Modal */}
-      {stoveModalMember && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-neutral-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50/70">
-              <h3 className="font-bold text-neutral-900 text-base">
-                Classify Stove Rate — {stoveModalMember.name}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setStoveModalMember(null)}
-                className="text-neutral-400 hover:text-neutral-700 p-1 rounded-lg cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+          {addMemberError && (
+            <div
+              role="alert"
+              className="bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 rounded-xl p-3 text-rose-800 dark:text-rose-200 flex items-start gap-2"
+            >
+              <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+              <span>{addMemberError}</span>
             </div>
-            <form onSubmit={handleSaveStoveType} className="p-6 space-y-4 text-xs">
-              {stoveModalError && (
-                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl">
-                  {stoveModalError}
-                </div>
-              )}
-              <div className="p-3 bg-neutral-50 border border-neutral-200 rounded-xl text-neutral-600">
-                Updating a member’s stove rate applies to future contributions and logs an immutable audit entry. Historical payments and closed contributions remain untouched.
-              </div>
-              <div className="grid grid-cols-2 gap-2.5 tabular-nums">
-                {(['electric', 'non_electric'] as const).map((tier) => (
-                  <label
-                    key={tier}
-                    className={`p-3 rounded-xl border cursor-pointer transition-all ${
-                      stoveModalType === tier
-                        ? 'border-neutral-900 bg-neutral-900 text-white'
-                        : 'border-neutral-200 bg-white hover:bg-neutral-50 text-neutral-800'
+          )}
+
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Full Name *
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. Kondwani Banda"
+              value={newMemberName}
+              onChange={(e) => setNewMemberName(e.target.value)}
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-900 dark:text-white"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Email Address *
+            </label>
+            <input
+              type="email"
+              placeholder="e.g. kbanda@example.mw"
+              value={newMemberEmail}
+              onChange={(e) => setNewMemberEmail(e.target.value)}
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-900 dark:text-white"
+              required
+            />
+          </div>
+
+          {/* Mandatory Stove Classification */}
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
+              Stove Classification (Contribution Rate) *
+            </label>
+            <div className="grid grid-cols-2 gap-2.5 tabular-nums">
+              {(['electric', 'non_electric'] as const).map((tier) => (
+                <label
+                  key={tier}
+                  className={`p-3 rounded-xl border cursor-pointer transition-colors ${
+                    newMemberStoveType === tier
+                      ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-blue-600 text-white shadow-xs'
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#11192C] hover:bg-slate-50 dark:hover:bg-[#18233D] text-slate-800 dark:text-slate-200'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="stoveType"
+                    value={tier}
+                    checked={newMemberStoveType === tier}
+                    onChange={() => setNewMemberStoveType(tier)}
+                    className="sr-only"
+                  />
+                  <div className="font-bold text-xs flex items-center gap-1.5">
+                    {tier === 'electric' ? (
+                      <Zap className="w-3.5 h-3.5 text-[#E5B93C]" />
+                    ) : (
+                      <Flame className="w-3.5 h-3.5 text-[#E5B93C]" />
+                    )}
+                    <span>{STOVE_TYPE_LABELS[tier]}</span>
+                  </div>
+                  <div
+                    className={`text-xs font-extrabold font-mono mt-1 ${
+                      newMemberStoveType === tier
+                        ? 'text-emerald-300 dark:text-white'
+                        : 'text-slate-600 dark:text-slate-300'
                     }`}
                   >
-                    <input
-                      type="radio"
-                      name="modalStove"
-                      value={tier}
-                      checked={stoveModalType === tier}
-                      onChange={() => setStoveModalType(tier)}
-                      className="sr-only"
-                    />
-                    <div className="font-bold">{STOVE_TYPE_LABELS[tier]}</div>
-                    <div className="mt-1 font-extrabold">{formatMWK(RATES[tier])}</div>
-                  </label>
-                ))}
-              </div>
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Audit Reason *
+                    {formatMWK(RATES[tier])} / cycle
+                  </div>
                 </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Initial verification of room appliance or switched to hotplate"
-                  value={stoveModalReason}
-                  onChange={(e) => setStoveModalReason(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-xs text-neutral-900"
-                />
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setStoveModalMember(null)}
-                  className="px-4 py-2 font-semibold text-neutral-600 rounded-xl cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="bg-neutral-900 hover:bg-black text-white px-5 py-2 font-bold rounded-xl cursor-pointer"
-                >
-                  Save Classification
-                </button>
-              </div>
-            </form>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
 
-      {/* Create Group Modal */}
-      {isCreating && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-neutral-200 overflow-hidden flex flex-col">
-            <div className="px-6 py-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50/70">
-              <h3 className="font-bold text-neutral-900 text-base">Create New Group</h3>
-              <button
-                type="button"
-                onClick={() => setIsCreating(false)}
-                className="text-neutral-400 hover:text-neutral-700 p-1 rounded-lg cursor-pointer"
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Phone Number (Malawi +265)
+            </label>
+            <input
+              type="text"
+              placeholder="+265 999 123 456"
+              value={newMemberPhone}
+              onChange={(e) => setNewMemberPhone(e.target.value)}
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-sm font-mono text-slate-900 dark:text-white"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+                Role in Group *
+              </label>
+              <select
+                value={newMemberRole}
+                onChange={(e) =>
+                  setNewMemberRole(e.target.value as 'admin' | 'treasurer' | 'member')
+                }
+                className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
               >
-                <X className="w-4 h-4" />
-              </button>
+                <option value="member">Regular Member</option>
+                <option value="treasurer">Treasurer / Collector</option>
+                <option value="admin">Group Administrator</option>
+              </select>
             </div>
 
-            <form onSubmit={handleCreate} className="p-6 space-y-4 text-xs">
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Group Name *
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Area 10 Shared Flat, Hostel Block C"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-sm text-neutral-900"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Category *
-                </label>
-                <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value as Group['category'])}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-xs text-neutral-900"
-                >
-                  <option value="house">Shared House / Flat</option>
-                  <option value="hostel">University Student Hostel</option>
-                  <option value="workplace">Office / Workplace Team</option>
-                  <option value="community">Community Water & Electricity</option>
-                  <option value="church">Church / Fellowship Group</option>
-                  <option value="project">Project / Event Committee</option>
-                </select>
-              </div>
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Description
-                </label>
-                <textarea
-                  rows={2}
-                  placeholder="Describe group purpose or location..."
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-xs text-neutral-800"
-                />
-              </div>
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Payment Rules & Policies
-                </label>
-                <textarea
-                  rows={2}
-                  value={paymentRules}
-                  onChange={(e) => setPaymentRules(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-xs text-neutral-800"
-                />
-              </div>
-              <div className="pt-2 flex items-center justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setIsCreating(false)}
-                  className="px-4 py-2 font-semibold text-neutral-600 rounded-xl cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="bg-neutral-900 hover:bg-black text-white px-5 py-2 font-bold rounded-xl cursor-pointer"
-                >
-                  Create Group
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Edit Group Modal */}
-      {isEditingGroup && currentGroup && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-neutral-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50/70">
-              <h3 className="font-bold text-neutral-900 text-base">Edit Group Settings</h3>
-              <button
-                type="button"
-                onClick={() => setIsEditingGroup(false)}
-                className="text-neutral-400 hover:text-neutral-700 p-1 rounded-lg cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <form onSubmit={handleSaveGroupEdit} className="p-6 space-y-4 text-xs">
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Group Name *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={editGroupName}
-                  onChange={(e) => setEditGroupName(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-sm text-neutral-900"
-                />
-              </div>
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Description
-                </label>
-                <textarea
-                  rows={2}
-                  value={editGroupDesc}
-                  onChange={(e) => setEditGroupDesc(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-xs text-neutral-800"
-                />
-              </div>
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Payment Rules
-                </label>
-                <textarea
-                  rows={2}
-                  value={editGroupRules}
-                  onChange={(e) => setEditGroupRules(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-xs text-neutral-800"
-                />
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setIsEditingGroup(false)}
-                  className="px-4 py-2 font-semibold text-neutral-600 rounded-xl cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="bg-neutral-900 hover:bg-black text-white px-5 py-2 font-bold rounded-xl cursor-pointer"
-                >
-                  Save Changes
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Archive Group Confirmation Modal */}
-      {isArchivingGroup && currentGroup && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-neutral-200 p-6 space-y-4 text-xs">
-            <h4 className="font-bold text-neutral-900 text-base">
-              Archive Group — {currentGroup.name}
-            </h4>
-            <p className="text-neutral-600">
-              Archiving hides this group from active operations while preserving all historical financial ledgers and audit logs.
-            </p>
-            <form onSubmit={handleConfirmArchive} className="space-y-3">
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Reason for Archiving *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Lease term completed / Group dissolved"
-                  value={archiveReason}
-                  onChange={(e) => setArchiveReason(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2"
-                />
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setIsArchivingGroup(false)}
-                  className="px-4 py-2 font-semibold text-neutral-600 rounded-xl cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="bg-rose-600 hover:bg-rose-700 text-white px-4 py-2 font-bold rounded-xl cursor-pointer"
-                >
-                  Confirm Archive
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Transfer Ownership Modal */}
-      {isTransferring && currentGroup && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-neutral-200 p-6 space-y-4 text-xs">
-            <h4 className="font-bold text-neutral-900 text-base">
-              Transfer Group Ownership
-            </h4>
-            <form onSubmit={handleConfirmTransfer} className="space-y-3">
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Select Active Member *
-                </label>
-                <select
-                  required
-                  value={transferCandidateId}
-                  onChange={(e) => setTransferCandidateId(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2"
-                >
-                  <option value="">Choose new group administrator...</option>
-                  {activeMembers.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name} ({m.email})
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Transfer Reason *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Incoming house captain handover"
-                  value={transferReason}
-                  onChange={(e) => setTransferReason(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2"
-                />
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setIsTransferring(false)}
-                  className="px-4 py-2 font-semibold text-neutral-600 rounded-xl cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="bg-neutral-900 hover:bg-black text-white px-4 py-2 font-bold rounded-xl cursor-pointer"
-                >
-                  Confirm Transfer
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Role Change Modal */}
-      {roleModalMember && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-neutral-200 p-6 space-y-4 text-xs">
-            <h4 className="font-bold text-neutral-900 text-base">
-              Change Member Role — {roleModalMember.name}
-            </h4>
-            <form onSubmit={handleSaveRoleChange} className="space-y-3">
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  New Role *
-                </label>
-                <select
-                  value={roleModalValue}
-                  onChange={(e) =>
-                    setRoleModalValue(e.target.value as 'admin' | 'treasurer' | 'member')
-                  }
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2"
-                >
-                  <option value="member">Regular Member</option>
-                  <option value="treasurer">Treasurer / Collector</option>
-                  <option value="admin">Group Administrator</option>
-                </select>
-              </div>
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Audit Reason *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Elected new treasurer"
-                  value={roleModalReason}
-                  onChange={(e) => setRoleModalReason(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2"
-                />
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setRoleModalMember(null)}
-                  className="px-4 py-2 font-semibold text-neutral-600 rounded-xl cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="bg-neutral-900 hover:bg-black text-white px-4 py-2 font-bold rounded-xl cursor-pointer"
-                >
-                  Update Role
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Suspend Member Modal */}
-      {memberToSuspend && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-neutral-200 p-6 space-y-4 text-xs">
-            <h4 className="font-bold text-neutral-900 text-base">
-              Suspend Member — {memberToSuspend.name}
-            </h4>
-            <p className="text-neutral-600">
-              Suspended members retain their historical ledger records and are excluded from routine group broadcasts until reinstated.
-            </p>
-            <form onSubmit={handleConfirmSuspend} className="space-y-3">
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Suspension Reason *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Temporary leave / pending arrears review"
-                  value={suspendReason}
-                  onChange={(e) => setSuspendReason(e.target.value)}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2"
-                />
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setMemberToSuspend(null)}
-                  className="px-4 py-2 font-semibold text-neutral-600 rounded-xl cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 font-bold rounded-xl cursor-pointer"
-                >
-                  Confirm Suspension
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Member Removal Confirmation Modal */}
-      {memberToRemove && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-neutral-200 space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0 border border-rose-100">
-                <AlertTriangle className="w-5 h-5 text-rose-600" />
-              </div>
-              <div>
-                <h4 className="font-extrabold text-neutral-900 text-base">
-                  Remove Member / Record Departure
-                </h4>
-                <p className="text-xs text-neutral-500">
-                  Manage tenant departure from {currentGroup?.name}
-                </p>
-              </div>
-            </div>
-
-            <div className="bg-neutral-50 rounded-2xl p-3.5 border border-neutral-200/80 text-xs space-y-2">
-              <p className="text-neutral-700">
-                Confirm removing <strong className="text-neutral-900">{memberToRemove.name}</strong> from the active directory?
-              </p>
-              <div className="text-[11px] text-neutral-500 flex items-start gap-1.5 bg-white p-2.5 rounded-xl border border-neutral-100">
-                <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                <span>
-                  All historical contributions, verified payments, and audit logs remain permanently preserved.
-                </span>
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-700">
-                Departure Reason
+            <div>
+              <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+                Room / Unit
               </label>
               <input
                 type="text"
-                value={removalReason}
-                onChange={(e) => setRemovalReason(e.target.value)}
-                className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-xs text-neutral-900"
+                placeholder="e.g. Room 1"
+                value={newMemberRoom}
+                onChange={(e) => setNewMemberRoom(e.target.value)}
+                className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
               />
             </div>
+          </div>
 
-            <div className="flex items-center justify-end gap-2.5 pt-2">
+          <div className="pt-2 flex items-center justify-end gap-3">
+            <button
+              type="button"
+              onClick={() => setIsAddingMember(false)}
+              className="min-h-[44px] px-4 py-2 font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-xl cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-5 py-2 font-bold rounded-xl transition-colors cursor-pointer"
+            >
+              Register Member
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Update Stove Classification Modal */}
+      <Modal
+        isOpen={Boolean(stoveModalMember)}
+        onClose={() => setStoveModalMember(null)}
+        title={`Classify Stove Rate — ${stoveModalMember?.name || ''}`}
+      >
+        <form onSubmit={handleSaveStoveType} className="space-y-4 text-xs">
+          {stoveModalError && (
+            <div className="p-3 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 rounded-xl">
+              {stoveModalError}
+            </div>
+          )}
+          <div className="p-3 bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 rounded-xl text-slate-600 dark:text-slate-300">
+            Updating a member&apos;s stove rate applies to future contributions and logs an immutable audit entry. Historical payments and closed contributions remain untouched.
+          </div>
+          <div className="grid grid-cols-2 gap-2.5 tabular-nums">
+            {(['electric', 'non_electric'] as const).map((tier) => (
+              <label
+                key={tier}
+                className={`p-3 rounded-xl border cursor-pointer transition-colors ${
+                  stoveModalType === tier
+                    ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-blue-600 text-white'
+                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#11192C] hover:bg-slate-50 dark:hover:bg-[#18233D] text-slate-800 dark:text-slate-200'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="modalStove"
+                  value={tier}
+                  checked={stoveModalType === tier}
+                  onChange={() => setStoveModalType(tier)}
+                  className="sr-only"
+                />
+                <div className="font-bold">{STOVE_TYPE_LABELS[tier]}</div>
+                <div className="mt-1 font-extrabold font-mono">{formatMWK(RATES[tier])}</div>
+              </label>
+            ))}
+          </div>
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Audit Reason *
+            </label>
+            <input
+              type="text"
+              required
+              placeholder="e.g. Initial verification of room appliance or switched to hotplate"
+              value={stoveModalReason}
+              onChange={(e) => setStoveModalReason(e.target.value)}
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => setStoveModalMember(null)}
+              className="min-h-[44px] px-4 py-2 font-semibold text-slate-600 dark:text-slate-300 rounded-xl cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-5 py-2 font-bold rounded-xl cursor-pointer"
+            >
+              Save Classification
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Create Group Modal */}
+      <Modal
+        isOpen={isCreating}
+        onClose={() => setIsCreating(false)}
+        title="Create New Group"
+        subtitle="Set up a shared financial circle in MWK"
+      >
+        <form onSubmit={handleCreate} className="space-y-4 text-xs">
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Group Name *
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. Area 10 Shared Flat, Hostel Block C"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-900 dark:text-white"
+              required
+            />
+          </div>
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Category *
+            </label>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value as Group['category'])}
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
+            >
+              <option value="house">Shared House / Flat</option>
+              <option value="hostel">University Student Hostel</option>
+              <option value="workplace">Office / Workplace Team</option>
+              <option value="community">Community Water &amp; Electricity</option>
+              <option value="church">Church / Fellowship Group</option>
+              <option value="project">Project / Event Committee</option>
+            </select>
+          </div>
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Description
+            </label>
+            <textarea
+              rows={2}
+              placeholder="Describe group purpose or location..."
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Payment Rules &amp; Policies
+            </label>
+            <textarea
+              rows={2}
+              value={paymentRules}
+              onChange={(e) => setPaymentRules(e.target.value)}
+              className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200"
+            />
+          </div>
+          <div className="pt-2 flex items-center justify-end gap-3">
+            <button
+              type="button"
+              onClick={() => setIsCreating(false)}
+              className="min-h-[44px] px-4 py-2 font-semibold text-slate-600 dark:text-slate-300 rounded-xl cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-5 py-2 font-bold rounded-xl cursor-pointer"
+            >
+              Create Group
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Edit Group Modal */}
+      <Modal
+        isOpen={Boolean(isEditingGroup && currentGroup)}
+        onClose={() => setIsEditingGroup(false)}
+        title="Edit Group Settings"
+      >
+        <form onSubmit={handleSaveGroupEdit} className="space-y-4 text-xs">
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Group Name *
+            </label>
+            <input
+              type="text"
+              required
+              value={editGroupName}
+              onChange={(e) => setEditGroupName(e.target.value)}
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-900 dark:text-white"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Description
+            </label>
+            <textarea
+              rows={2}
+              value={editGroupDesc}
+              onChange={(e) => setEditGroupDesc(e.target.value)}
+              className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Payment Rules
+            </label>
+            <textarea
+              rows={2}
+              value={editGroupRules}
+              onChange={(e) => setEditGroupRules(e.target.value)}
+              className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => setIsEditingGroup(false)}
+              className="min-h-[44px] px-4 py-2 font-semibold text-slate-600 dark:text-slate-300 rounded-xl cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-5 py-2 font-bold rounded-xl cursor-pointer"
+            >
+              Save Changes
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Archive Group Confirmation Modal */}
+      <Modal
+        isOpen={Boolean(isArchivingGroup && currentGroup)}
+        onClose={() => setIsArchivingGroup(false)}
+        title={`Archive Group — ${currentGroup?.name || ''}`}
+      >
+        <div className="space-y-4 text-xs">
+          <p className="text-slate-600 dark:text-slate-300">
+            Archiving hides this group from active operations while preserving all historical financial ledgers and audit logs.
+          </p>
+          <form onSubmit={handleConfirmArchive} className="space-y-3">
+            <div>
+              <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+                Reason for Archiving *
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g. Lease term completed / Group dissolved"
+                value={archiveReason}
+                onChange={(e) => setArchiveReason(e.target.value)}
+                className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-slate-900 dark:text-white"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
-                onClick={() => setMemberToRemove(null)}
-                className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:bg-neutral-100 rounded-xl cursor-pointer"
+                onClick={() => setIsArchivingGroup(false)}
+                className="min-h-[44px] px-4 py-2 font-semibold text-slate-600 dark:text-slate-300 rounded-xl cursor-pointer"
               >
                 Cancel
               </button>
               <button
-                type="button"
-                onClick={handleConfirmRemove}
-                className="px-4 py-2 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl flex items-center gap-1.5 cursor-pointer"
+                type="submit"
+                className="min-h-[44px] bg-rose-600 hover:bg-rose-700 text-white px-4 py-2 font-bold rounded-xl cursor-pointer"
               >
-                <UserMinus className="w-3.5 h-3.5" />
-                <span>Confirm Removal</span>
+                Confirm Archive
               </button>
             </div>
+          </form>
+        </div>
+      </Modal>
+
+      {/* Transfer Ownership Modal */}
+      <Modal
+        isOpen={Boolean(isTransferring && currentGroup)}
+        onClose={() => setIsTransferring(false)}
+        title="Transfer Group Ownership"
+      >
+        <form onSubmit={handleConfirmTransfer} className="space-y-3 text-xs">
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Select Active Member *
+            </label>
+            <select
+              required
+              value={transferCandidateId}
+              onChange={(e) => setTransferCandidateId(e.target.value)}
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-slate-900 dark:text-white"
+            >
+              <option value="">Choose new group administrator...</option>
+              {activeMembers.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} ({m.email})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Transfer Reason *
+            </label>
+            <input
+              type="text"
+              required
+              placeholder="e.g. Incoming house captain handover"
+              value={transferReason}
+              onChange={(e) => setTransferReason(e.target.value)}
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-slate-900 dark:text-white"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => setIsTransferring(false)}
+              className="min-h-[44px] px-4 py-2 font-semibold text-slate-600 dark:text-slate-300 rounded-xl cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-4 py-2 font-bold rounded-xl cursor-pointer"
+            >
+              Confirm Transfer
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Role Change Modal */}
+      <Modal
+        isOpen={Boolean(roleModalMember)}
+        onClose={() => setRoleModalMember(null)}
+        title={`Change Member Role — ${roleModalMember?.name || ''}`}
+      >
+        <form onSubmit={handleSaveRoleChange} className="space-y-3 text-xs">
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              New Role *
+            </label>
+            <select
+              value={roleModalValue}
+              onChange={(e) =>
+                setRoleModalValue(e.target.value as 'admin' | 'treasurer' | 'member')
+              }
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-slate-900 dark:text-white"
+            >
+              <option value="member">Regular Member</option>
+              <option value="treasurer">Treasurer / Collector</option>
+              <option value="admin">Group Administrator</option>
+            </select>
+          </div>
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Audit Reason *
+            </label>
+            <input
+              type="text"
+              required
+              placeholder="e.g. Elected new treasurer"
+              value={roleModalReason}
+              onChange={(e) => setRoleModalReason(e.target.value)}
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-slate-900 dark:text-white"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => setRoleModalMember(null)}
+              className="min-h-[44px] px-4 py-2 font-semibold text-slate-600 dark:text-slate-300 rounded-xl cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-4 py-2 font-bold rounded-xl cursor-pointer"
+            >
+              Update Role
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Suspend Member Modal */}
+      <Modal
+        isOpen={Boolean(memberToSuspend)}
+        onClose={() => setMemberToSuspend(null)}
+        title={`Suspend Member — ${memberToSuspend?.name || ''}`}
+      >
+        <div className="space-y-4 text-xs">
+          <p className="text-slate-600 dark:text-slate-300">
+            Suspended members retain their historical ledger records and are excluded from routine group broadcasts until reinstated.
+          </p>
+          <form onSubmit={handleConfirmSuspend} className="space-y-3">
+            <div>
+              <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+                Suspension Reason *
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g. Temporary leave / pending arrears review"
+                value={suspendReason}
+                onChange={(e) => setSuspendReason(e.target.value)}
+                className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-slate-900 dark:text-white"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setMemberToSuspend(null)}
+                className="min-h-[44px] px-4 py-2 font-semibold text-slate-600 dark:text-slate-300 rounded-xl cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="min-h-[44px] bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 font-bold rounded-xl cursor-pointer"
+              >
+                Confirm Suspension
+              </button>
+            </div>
+          </form>
+        </div>
+      </Modal>
+
+      {/* Member Removal Confirmation Modal */}
+      <Modal
+        isOpen={Boolean(memberToRemove)}
+        onClose={() => setMemberToRemove(null)}
+        title="Remove Member / Record Departure"
+        subtitle={`Manage tenant departure from ${currentGroup?.name || 'group'}`}
+      >
+        <div className="space-y-4 text-xs">
+          <div className="bg-slate-50 dark:bg-[#11192C] rounded-2xl p-3.5 border border-slate-200 dark:border-slate-800 space-y-2">
+            <p className="text-slate-700 dark:text-slate-200">
+              Confirm removing{' '}
+              <strong className="text-slate-900 dark:text-white">
+                {memberToRemove?.name}
+              </strong>{' '}
+              from the active directory?
+            </p>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400 flex items-start gap-1.5 bg-white dark:bg-[#0D1424] p-2.5 rounded-xl border border-slate-100 dark:border-slate-800">
+              <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+              <span>
+                All historical contributions, verified payments, and audit logs remain permanently preserved.
+              </span>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+              Departure Reason
+            </label>
+            <input
+              type="text"
+              value={removalReason}
+              onChange={(e) => setRemovalReason(e.target.value)}
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-2.5 pt-2">
+            <button
+              type="button"
+              onClick={() => setMemberToRemove(null)}
+              className="min-h-[44px] px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmRemove}
+              className="min-h-[44px] px-4 py-2 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl flex items-center gap-1.5 cursor-pointer"
+            >
+              <UserMinus className="w-3.5 h-3.5" />
+              <span>Confirm Removal</span>
+            </button>
           </div>
         </div>
-      )}
+      </Modal>
 
       {/* Member Welcome Modal */}
       <MemberWelcomeModal

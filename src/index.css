@@ -1,38 +1,105 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @layer base {
   :root {
-    --font-heading: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    --font-mono: 'JetBrains Mono', monospace;
+    --font-heading: 'Manrope', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    --us-bg: #F6F8FC;
+    --us-surface: #FFFFFF;
+    --us-surface-muted: #F1F5F9;
+    --us-border: #E2E8F0;
+    --us-text: #0F172A;
+    --us-text-muted: #475569;
+    --us-accent: #2563EB;
+    --us-cyan: #0891B2;
+    --us-gold: #D5A52B;
+    color-scheme: light;
+  }
+
+  .dark {
+    --us-bg: #070B14;
+    --us-surface: #0D1424;
+    --us-surface-muted: #131D33;
+    --us-border: rgba(148, 163, 184, 0.16);
+    --us-text: #F1F5F9;
+    --us-text-muted: #94A3B8;
+    --us-accent: #3B82F6;
+    --us-cyan: #22D3EE;
+    --us-gold: #E5B93C;
+    color-scheme: dark;
+  }
+
+  html {
+    background-color: var(--us-bg);
+    color: var(--us-text);
+    scroll-behavior: smooth;
   }
 
   body {
     font-family: var(--font-sans);
-    background-color: #FFFFFF;
-    color: #111111;
+    background-color: var(--us-bg);
+    color: var(--us-text);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
   }
 
   h1, h2, h3, h4, h5, h6 {
     font-family: var(--font-heading);
     letter-spacing: -0.02em;
   }
+
+  *:focus-visible {
+    outline: 2px solid var(--us-accent);
+    outline-offset: 2px;
+  }
 }
 
-/* Custom scrollbar */
+/* Custom subtle scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #c7c7c7;
+  background: rgba(148, 163, 184, 0.45);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #a0a0a0;
+  background: rgba(100, 116, 139, 0.7);
 }
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.45);
+}
+
+/* Accessibility: honor reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Clean print formatting regardless of active dark/light mode */
+@media print {
+  html, body {
+    background: #FFFFFF !important;
+    color: #0F172A !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+

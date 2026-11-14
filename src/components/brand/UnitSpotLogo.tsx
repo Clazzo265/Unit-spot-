@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useId } from 'react';
 
 interface LogoProps {
   variant?: 'light' | 'dark' | 'auto';
@@ -8,11 +8,15 @@ interface LogoProps {
 }
 
 export const UnitSpotLogo: React.FC<LogoProps> = ({
-  variant = 'light',
+  variant = 'auto',
   size = 'md',
   showWordmark = true,
   className = '',
 }) => {
+  const uid = useId().replace(/:/g, '');
+  const unitGradId = `unitGrad-${uid}`;
+  const spotGradId = `spotGrad-${uid}`;
+
   const iconSizes = {
     sm: 'w-7 h-7',
     md: 'w-9 h-9',
@@ -27,18 +31,31 @@ export const UnitSpotLogo: React.FC<LogoProps> = ({
     xl: 'text-3xl',
   };
 
-  const isDark = variant === 'dark';
+  const isForcedDark = variant === 'dark';
+  const isAuto = variant === 'auto';
+
+  const wordmarkColorClass = isForcedDark
+    ? 'text-white'
+    : isAuto
+      ? 'text-slate-900 dark:text-white'
+      : 'text-slate-900';
+
+  const subtitleColorClass = isForcedDark
+    ? 'text-slate-400'
+    : isAuto
+      ? 'text-slate-500 dark:text-slate-400'
+      : 'text-slate-500';
+
+  const displayClass = /\bhidden\b|\bflex\b|\binline-flex\b|\bblock\b/.test(className)
+    ? ''
+    : 'inline-flex';
 
   return (
-    <div className={`inline-flex items-center gap-2.5 select-none shrink-0 ${className}`}>
+    <div className={`${displayClass} items-center gap-2 sm:gap-2.5 select-none shrink-0 ${className}`.trim()}>
       <div
-        className={`relative ${iconSizes[size]} rounded-xl flex items-center justify-center font-bold shadow-xs transition-transform duration-200 group-hover:scale-105`}
+        className={`relative ${iconSizes[size]} rounded-xl flex items-center justify-center font-bold shadow-xs transition-transform duration-200 group-hover:scale-105 bg-gradient-to-br from-[#0F172A] to-[#070B14] dark:from-[#16223D] dark:to-[#0B1222] border border-[#D5A52B]/50`}
         style={{
-          background: isDark
-            ? 'linear-gradient(135deg, #1C1C1E 0%, #0F0F10 100%)'
-            : 'linear-gradient(135deg, #111111 0%, #1A1A1A 100%)',
-          border: '1px solid rgba(213, 165, 43, 0.45)',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.14)',
+          boxShadow: '0 2px 10px rgba(0, 0, 0, 0.18)',
         }}
       >
         <svg
@@ -49,12 +66,12 @@ export const UnitSpotLogo: React.FC<LogoProps> = ({
         >
           <path
             d="M7 7H12V18C12 20.2091 13.7909 22 16 22C18.2091 22 20 20.2091 20 18V7H25V18C25 22.9706 20.9706 27 16 27C11.0294 27 7 22.9706 7 18V7Z"
-            fill="url(#unitGradient)"
+            fill={`url(#${unitGradId})`}
           />
-          <circle cx="16" cy="13" r="3.5" fill="url(#spotGoldGradient)" />
+          <circle cx="16" cy="13" r="3.5" fill={`url(#${spotGradId})`} />
           <defs>
             <linearGradient
-              id="unitGradient"
+              id={unitGradId}
               x1="7"
               y1="7"
               x2="25"
@@ -62,11 +79,11 @@ export const UnitSpotLogo: React.FC<LogoProps> = ({
               gradientUnits="userSpaceOnUse"
             >
               <stop stopColor="#FFFFFF" />
-              <stop offset="0.6" stopColor="#E5E5E5" />
+              <stop offset="0.6" stopColor="#E2E8F0" />
               <stop offset="1" stopColor="#D5A52B" />
             </linearGradient>
             <linearGradient
-              id="spotGoldGradient"
+              id={spotGradId}
               x1="12.5"
               y1="9.5"
               x2="19.5"
@@ -84,14 +101,12 @@ export const UnitSpotLogo: React.FC<LogoProps> = ({
         <div className="flex flex-col leading-none">
           <div className="flex items-center tracking-tight">
             <span
-              className={`font-extrabold ${textSizes[size]} tracking-tight ${
-                isDark ? 'text-white' : 'text-[#111111]'
-              }`}
+              className={`font-extrabold ${textSizes[size]} tracking-tight ${wordmarkColorClass}`}
             >
               Unit<span className="text-[#D5A52B]">Spot</span>
             </span>
           </div>
-          <span className="text-[9px] tracking-widest font-semibold uppercase text-[#808080] mt-0.5 whitespace-nowrap">
+          <span className={`text-[9px] tracking-widest font-semibold uppercase mt-0.5 whitespace-nowrap ${subtitleColorClass}`}>
             Accommodation &amp; Finance
           </span>
         </div>

@@ -1,8 +1,11 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { useToast } from '../../context/ToastContext';
 import { CommitmentCard } from './CommitmentCard';
 import { resolveMemberInfo } from '../../utils/financialConfig';
 import { canUserVerifyPayments } from '../../utils/centralizedFinancialAdmin';
+import { Modal } from '../ui/Modal';
+import { EmptyState } from '../ui/EmptyState';
 import { Clock, Plus } from 'lucide-react';
 
 export const CommitmentCenterView: React.FC<{
@@ -19,6 +22,7 @@ export const CommitmentCenterView: React.FC<{
     requestCommitmentExtension,
     approveCommitmentExtension,
   } = useApp();
+  const { showToast } = useToast();
 
   const [filter, setFilter] = useState<'all' | 'active' | 'completed' | 'overdue'>('all');
   const [extensionModalCommitmentId, setExtensionModalCommitmentId] = useState<string | null>(null);
@@ -67,6 +71,10 @@ export const CommitmentCenterView: React.FC<{
       extensionReason.trim() || 'Need a few more days to arrange funds.'
     );
 
+    showToast('Extension Logged', {
+      message: `Requested +${extensionDays} additional days for settlement.`,
+      variant: 'info',
+    });
     setExtensionModalCommitmentId(null);
     setExtensionReason('');
   };
@@ -74,55 +82,55 @@ export const CommitmentCenterView: React.FC<{
   return (
     <div className="space-y-6">
       {/* Top Banner */}
-      <div className="bg-gradient-to-r from-neutral-900 via-neutral-950 to-neutral-900 rounded-3xl p-6 sm:p-8 text-white relative overflow-hidden border border-neutral-800 shadow-lg">
+      <div className="bg-gradient-to-br from-slate-900 via-[#0D162D] to-slate-900 rounded-3xl p-6 sm:p-8 text-white relative overflow-hidden border border-slate-800 shadow-lg">
         <div className="relative z-10 max-w-2xl">
-          <div className="inline-flex items-center gap-1.5 bg-[#D5A52B]/20 text-[#D5A52B] border border-[#D5A52B]/30 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider mb-3">
-            <Clock className="w-3.5 h-3.5" />
-            Commitment Tracker
+          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#E5B93C] mb-2">
+            <Clock className="w-4 h-4" />
+            <span>Commitment Tracker</span>
           </div>
           <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
             Commitment &amp; Countdown Engine
           </h2>
-          <p className="text-neutral-300 text-sm mt-2 leading-relaxed">
+          <p className="text-slate-300 text-sm mt-2 leading-relaxed">
             When members pay partially, track their promised settlement dates with real-time countdown clocks, transparent extension approvals, and full audit accountability.
           </p>
 
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <button
+              type="button"
               onClick={() => onOpenCreateCommitment()}
-              className="bg-white hover:bg-neutral-100 text-neutral-900 text-xs font-bold px-4 py-2.5 rounded-xl transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer"
+              className="min-h-[44px] bg-white hover:bg-slate-100 text-slate-900 text-xs font-bold px-4 py-2.5 rounded-xl transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer"
             >
-              <Plus className="w-4 h-4 text-neutral-900" />
-              Record New Commitment
+              <Plus className="w-4 h-4" />
+              <span>Record New Commitment</span>
             </button>
           </div>
         </div>
-
-        <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-radial from-[#D5A52B]/10 to-transparent pointer-events-none" />
       </div>
 
       {/* Filter Tabs */}
       <div className="flex items-center justify-between gap-3 overflow-x-auto pb-1">
-        <div className="inline-flex p-1 bg-neutral-100 rounded-xl border border-neutral-200 text-xs">
+        <div className="inline-flex p-1 bg-slate-100 dark:bg-[#11192C] rounded-xl border border-slate-200 dark:border-slate-800 text-xs">
           {[
             { id: 'all', label: `All Commitments (${groupCommitments.length})` },
             {
               id: 'active',
-              label: `Active Countdowns (${groupCommitments.filter((c) => c.currentOutstandingAmount > 0).length})`,
+              label: `Active (${groupCommitments.filter((c) => c.currentOutstandingAmount > 0).length})`,
             },
             {
               id: 'completed',
-              label: `Honoured / Cleared (${groupCommitments.filter((c) => c.currentOutstandingAmount <= 0).length})`,
+              label: `Cleared (${groupCommitments.filter((c) => c.currentOutstandingAmount <= 0).length})`,
             },
             { id: 'overdue', label: 'Overdue' },
           ].map((tab) => (
             <button
               key={tab.id}
+              type="button"
               onClick={() => setFilter(tab.id as 'all' | 'active' | 'completed' | 'overdue')}
-              className={`px-3.5 py-1.5 rounded-lg font-medium transition-all cursor-pointer whitespace-nowrap ${
+              className={`min-h-[38px] px-3.5 py-1.5 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap ${
                 filter === tab.id
-                  ? 'bg-white text-neutral-900 font-bold shadow-xs'
-                  : 'text-neutral-600 hover:text-neutral-900'
+                  ? 'bg-white dark:bg-blue-600 text-slate-900 dark:text-white font-bold shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
               {tab.label}
@@ -133,13 +141,15 @@ export const CommitmentCenterView: React.FC<{
 
       {/* Grid of Commitment Cards */}
       {filteredCommitments.length === 0 ? (
-        <div className="bg-white rounded-2xl border border-neutral-200 p-12 text-center text-neutral-500">
-          <Clock className="w-8 h-8 mx-auto mb-2 text-neutral-300" />
-          <p className="font-semibold text-neutral-700">No commitments found</p>
-          <p className="text-xs text-neutral-400 mt-1">
-            When a partial payment is recorded, log a promised date to track accountability.
-          </p>
-        </div>
+        <EmptyState
+          icon={Clock}
+          title="No commitments found"
+          description="When a partial payment is recorded, log a promised date to track accountability."
+          actionLabel="Record New Commitment"
+          onAction={() => onOpenCreateCommitment()}
+          secondaryActionLabel={filter !== 'all' ? 'Show All' : undefined}
+          onSecondaryAction={filter !== 'all' ? () => setFilter('all') : undefined}
+        />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {filteredCommitments.map((commitment) => {
@@ -155,7 +165,12 @@ export const CommitmentCenterView: React.FC<{
                 canManage={canManage}
                 onRecordPaymentClick={() => onOpenRecordPayment(commitment.assignmentId)}
                 onRequestExtensionClick={() => setExtensionModalCommitmentId(commitment.id)}
-                onApproveExtensionClick={() => approveCommitmentExtension(commitment.id, true)}
+                onApproveExtensionClick={() => {
+                  approveCommitmentExtension(commitment.id, true);
+                  showToast('Extension Approved', {
+                    message: `Revised commitment deadline approved for ${member?.name || 'member'}.`,
+                  });
+                }}
               />
             );
           })}
@@ -163,75 +178,73 @@ export const CommitmentCenterView: React.FC<{
       )}
 
       {/* Extension Request Modal */}
-      {extensionModalCommitmentId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl border border-neutral-200 p-6 space-y-4">
-            <h3 className="font-bold text-neutral-900 text-base">
-              Log Commitment Extension
-            </h3>
-            <p className="text-xs text-neutral-500">
-              Record a member&apos;s request for additional days to complete settlement.
-            </p>
-
-            <form onSubmit={handleSendExtensionRequest} className="space-y-3 text-xs">
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Additional Days Requested
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[3, 5, 7].map((d) => (
-                    <button
-                      key={d}
-                      type="button"
-                      onClick={() => setExtensionDays(d)}
-                      className={`py-2 rounded-xl font-bold border transition-colors cursor-pointer ${
-                        extensionDays === d
-                          ? 'bg-neutral-900 border-neutral-900 text-white'
-                          : 'bg-neutral-50 border-neutral-200 text-neutral-800 hover:bg-neutral-100'
-                      }`}
-                    >
-                      +{d} Days
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-semibold uppercase tracking-wider text-neutral-600 mb-1">
-                  Reason for Extension
-                </label>
-                <textarea
-                  rows={2}
-                  value={extensionReason}
-                  onChange={(e) => setExtensionReason(e.target.value)}
-                  placeholder="e.g. Awaiting salary disbursement on Friday"
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-xs text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900"
-                  required
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2">
+      <Modal
+        isOpen={Boolean(extensionModalCommitmentId)}
+        onClose={() => {
+          setExtensionModalCommitmentId(null);
+          setExtensionReason('');
+        }}
+        title="Log Commitment Extension"
+        subtitle="Record a member's request for additional days to complete settlement"
+        maxWidthClass="max-w-sm"
+      >
+        <form onSubmit={handleSendExtensionRequest} className="space-y-3.5 text-xs">
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
+              Additional Days Requested
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {[3, 5, 7].map((d) => (
                 <button
+                  key={d}
                   type="button"
-                  onClick={() => {
-                    setExtensionModalCommitmentId(null);
-                    setExtensionReason('');
-                  }}
-                  className="px-3 py-2 text-neutral-600 hover:text-neutral-900 font-medium cursor-pointer"
+                  onClick={() => setExtensionDays(d)}
+                  className={`min-h-[42px] py-2 rounded-xl font-bold border transition-colors cursor-pointer ${
+                    extensionDays === d
+                      ? 'bg-slate-900 dark:bg-blue-600 border-slate-900 dark:border-blue-500 text-white'
+                      : 'bg-slate-50 dark:bg-[#11192C] border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#18233D]'
+                  }`}
                 >
-                  Cancel
+                  +{d} Days
                 </button>
-                <button
-                  type="submit"
-                  className="bg-neutral-900 text-white px-4 py-2 font-bold rounded-xl text-xs hover:bg-black transition-colors cursor-pointer"
-                >
-                  Submit Request
-                </button>
-              </div>
-            </form>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
+              Reason for Extension
+            </label>
+            <textarea
+              rows={2}
+              value={extensionReason}
+              onChange={(e) => setExtensionReason(e.target.value)}
+              placeholder="e.g. Awaiting salary disbursement on Friday"
+              className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
+              required
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => {
+                setExtensionModalCommitmentId(null);
+                setExtensionReason('');
+              }}
+              className="min-h-[44px] px-4 py-2 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white font-semibold cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-4 py-2 font-bold rounded-xl text-xs transition-colors cursor-pointer"
+            >
+              Submit Request
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 };

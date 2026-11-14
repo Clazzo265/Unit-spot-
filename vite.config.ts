@@ -8,7 +8,25 @@ export default defineConfig(() => {
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
+      },
+    },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: (id: string) => {
+            if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) {
+              return 'react_vendor';
+            }
+            if (id.includes('node_modules/firebase/') || id.includes('node_modules/@firebase/')) {
+              return 'firebase_vendor';
+            }
+            if (id.includes('node_modules/lucide-react/') || id.includes('node_modules/canvas-confetti/')) {
+              return 'ui_vendor';
+            }
+            return undefined;
+          },
+        },
       },
     },
     server: {

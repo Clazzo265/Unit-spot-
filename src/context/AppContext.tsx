@@ -66,6 +66,12 @@ import {
   canUserApproveExpenses,
 } from '../utils/centralizedFinancialAdmin';
 import {
+  stripDataUrlsFromPayments,
+  stripDataUrlsFromExpenses,
+  persistStorageWithFallback,
+  mergeItemsById,
+} from '../utils/storageUtils';
+import {
   auth,
   db,
   googleProvider,
@@ -483,15 +489,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           snapshot.forEach((docSnap) => {
             remoteGroups.push(docSnap.data() as Group);
           });
-          setGroups((prev) => {
-            const merged = [...prev];
-            remoteGroups.forEach((rg) => {
-              const idx = merged.findIndex((g) => g.id === rg.id);
-              if (idx >= 0) merged[idx] = rg;
-              else merged.push(rg);
-            });
-            return merged;
-          });
+          setGroups((prev) => mergeItemsById(prev, remoteGroups));
           setCurrentGroup((prev) => {
             if (!prev) return remoteGroups.find((g) => g.status !== 'archived') || remoteGroups[0] || null;
             const refreshed = remoteGroups.find((g) => g.id === prev.id);
@@ -502,7 +500,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       (err) => console.warn('Groups snapshot error:', err)
     );
 
-    return () => unsubGroups();
+    const notificationsRef = collection(db, `users/${firebaseAuthUser.uid}/notifications`);
+    const unsubNotifications = onSnapshot(
+      notificationsRef,
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const remoteNotifs: AppNotification[] = [];
+          snapshot.forEach((docSnap) => {
+            remoteNotifs.push(docSnap.data() as AppNotification);
+          });
+          setNotifications((prev) =>
+            mergeItemsById(
+              prev,
+              remoteNotifs,
+              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+            )
+          );
+        }
+      },
+      (err) => console.warn('Notifications snapshot error:', err)
+    );
+
+    return () => {
+      unsubGroups();
+      unsubNotifications();
+    };
   }, [firebaseAuthUser]);
 
   // Listen to active group subcollections
@@ -605,27 +627,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, [currentGroup?.id, firebaseAuthUser]);
 
-  // Sync state to local storage
+  // Sync state to local storage with quota-safe fallback for inline receipt images
   useEffect(() => {
-    try {
-      localStorage.setItem(`${STORAGE_KEY}_users`, JSON.stringify(users));
-      localStorage.setItem(`${STORAGE_KEY}_groups`, JSON.stringify(groups));
-      localStorage.setItem(`${STORAGE_KEY}_currentGroup`, JSON.stringify(currentGroup));
-      localStorage.setItem(`${STORAGE_KEY}_groupMembers`, JSON.stringify(groupMembers));
-      localStorage.setItem(`${STORAGE_KEY}_contributions`, JSON.stringify(contributions));
-      localStorage.setItem(`${STORAGE_KEY}_assignments`, JSON.stringify(assignments));
-      localStorage.setItem(`${STORAGE_KEY}_payments`, JSON.stringify(payments));
-      localStorage.setItem(`${STORAGE_KEY}_commitments`, JSON.stringify(commitments));
-      localStorage.setItem(`${STORAGE_KEY}_commitmentEvents`, JSON.stringify(commitmentEvents));
-      localStorage.setItem(`${STORAGE_KEY}_expenses`, JSON.stringify(expenses));
-      localStorage.setItem(`${STORAGE_KEY}_disputes`, JSON.stringify(disputes));
-      localStorage.setItem(`${STORAGE_KEY}_notifications`, JSON.stringify(notifications));
-      localStorage.setItem(`${STORAGE_KEY}_auditLogs`, JSON.stringify(auditLogs));
-      localStorage.setItem(`${STORAGE_KEY}_communications`, JSON.stringify(communications));
-      localStorage.setItem(`${STORAGE_KEY}_notificationConfig`, JSON.stringify(notificationConfig));
-    } catch (e) {
-      console.warn('Storage sync error', e);
-    }
+    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_users`, users);
+    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_groups`, groups);
+    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_currentGroup`, currentGroup);
+    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_groupMembers`, groupMembers);
+    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_contributions`, contributions);
+    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_assignments`, assignments);
+    persistStorageWithFallback(
+      localStorage,
+      `${STORAGE_KEY}_payments`,
+      payments,
+      stripDataUrlsFromPayments(payments)
+    );
+    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_commitments`, commitments);
+    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_commitmentEvents`, commitmentEvents);
+    persistStorageWithFallback(
+      localStorage,
+      `${STORAGE_KEY}_expenses`,
+      expenses,
+      stripDataUrlsFromExpenses(expenses)
+    );
+    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_disputes`, disputes);
+    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_notifications`, notifications);
+    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_auditLogs`, auditLogs);
+    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_communications`, communications);
+    persistStorageWithFallback(
+      localStorage,
+      `${STORAGE_KEY}_notificationConfig`,
+      notificationConfig
+    );
   }, [
     users,
     groups,
@@ -660,6 +692,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setFirebaseAuthUser(null);
       setCurrentUserState(null);
       setAuthStatus('unauthenticated');
+      clearAllData();
+      setUsers([]);
     } catch (error) {
       console.error('Sign Out failed:', error);
       setActionError('Could not sign out cleanly. Please refresh and try again.');
@@ -2432,11 +2466,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const markNotificationRead = (id: string) => {
+    const target = notifications.find((n) => n.id === id);
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    if (firebaseAuthUser && target && target.userId === firebaseAuthUser.uid && !target.read) {
+      syncToFirestore(
+        `users/${target.userId}/notifications`,
+        target.id,
+        { ...target, read: true } as unknown as Record<string, unknown>,
+        OperationType.UPDATE
+      );
+    }
   };
 
   const markAllNotificationsRead = () => {
+    const unreadOwned = notifications.filter(
+      (n) => !n.read && firebaseAuthUser && n.userId === firebaseAuthUser.uid
+    );
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    unreadOwned.forEach((n) => {
+      syncToFirestore(
+        `users/${n.userId}/notifications`,
+        n.id,
+        { ...n, read: true } as unknown as Record<string, unknown>,
+        OperationType.UPDATE
+      );
+    });
   };
 
   const rescanAndRepairRecords = (): IntegrityReport => {
