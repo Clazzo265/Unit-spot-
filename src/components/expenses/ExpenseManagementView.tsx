@@ -1,16 +1,9 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { formatMWK } from '../../utils/financialCalculations';
-import { 
-  Receipt, 
-  Plus, 
-  CheckCircle2, 
-  Clock, 
-  XCircle, 
-  DollarSign, 
-  TrendingDown, 
-  FileText 
-} from 'lucide-react';
+import { formatMWK, formatSignedMWK } from '../../utils/financialCalculations';
+import { toSafeIntMWK } from '../../utils/financialConfig';
+import { canUserApproveExpenses } from '../../utils/centralizedFinancialAdmin';
+import { Plus, CheckCircle2, Clock, XCircle, AlertCircle } from 'lucide-react';
 
 export const ExpenseManagementView: React.FC<{
   onOpenRecordExpense: () => void;
@@ -18,22 +11,38 @@ export const ExpenseManagementView: React.FC<{
   const { expenses, payments, currentGroup, currentUser, approveExpense } = useApp();
 
   const [filterCategory, setFilterCategory] = useState<string>('all');
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const canApprove = currentUser.role === 'super_admin' || currentUser.role === 'group_admin';
+  const canApprove = canUserApproveExpenses(currentUser?.role);
 
-  // Group verified funds
-  const totalVerifiedCollected = payments
-    .filter(p => p.verificationStatus === 'verified')
-    .reduce((sum, p) => sum + p.amountReceived, 0);
+  const groupExpenses = currentGroup
+    ? expenses.filter((e) => e.groupId === currentGroup.id)
+    : expenses;
 
-  const approvedExpenses = expenses.filter(e => e.status === 'approved');
-  const totalSpent = approvedExpenses.reduce((sum, e) => sum + e.amount, 0);
+  const groupPayments = currentGroup
+    ? payments.filter((p) => p.groupId === currentGroup.id)
+    : payments;
+
+  const totalVerifiedCollected = groupPayments
+    .filter((p) => p.verificationStatus === 'verified')
+    .reduce((sum, p) => sum + toSafeIntMWK(p.amountReceived), 0);
+
+  const approvedExpenses = groupExpenses.filter((e) => e.status === 'approved');
+  const totalSpent = approvedExpenses.reduce((sum, e) => sum + toSafeIntMWK(e.amount), 0);
   const remainingFunds = totalVerifiedCollected - totalSpent;
 
-  const filteredExpenses = expenses.filter(e => {
+  const filteredExpenses = groupExpenses.filter((e) => {
     if (filterCategory === 'all') return true;
     return e.category === filterCategory;
   });
+
+  const handleApproval = (expenseId: string, approved: boolean) => {
+    setActionError(null);
+    const res = approveExpense(expenseId, approved);
+    if (!res.success && res.error) {
+      setActionError(res.error);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -41,10 +50,10 @@ export const ExpenseManagementView: React.FC<{
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold text-neutral-900 tracking-tight">
-            Expense Management & Reconciliation
+            Expense Management &amp; Reconciliation
           </h2>
           <p className="text-sm text-neutral-500 mt-0.5">
-            Transparent tracking of where group contributions were spent (ESCOM tokens, water, rent, wifi)
+            Transparent tracking of where group contributions were spent (ESCOM tokens, water, rent, WiFi)
           </p>
         </div>
 
@@ -57,17 +66,24 @@ export const ExpenseManagementView: React.FC<{
         </button>
       </div>
 
+      {actionError && (
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 px-4 py-3 rounded-xl text-xs font-medium flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+          <span>{actionError}</span>
+        </div>
+      )}
+
       {/* Financial Reconciliation Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-white rounded-2xl border border-neutral-200 p-5 shadow-xs">
           <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider">
             Total Verified Inflow
           </span>
-          <div className="text-2xl font-extrabold text-neutral-900 mt-1">
+          <div className="text-2xl font-extrabold text-neutral-900 mt-1 tabular-nums">
             {formatMWK(totalVerifiedCollected)}
           </div>
-          <span className="text-[11px] text-emerald-600 font-medium mt-1 inline-block">
-            Collected & verified in MWK
+          <span className="text-[11px] text-emerald-700 font-medium mt-1 inline-block">
+            Collected &amp; verified in MWK
           </span>
         </div>
 
@@ -75,11 +91,11 @@ export const ExpenseManagementView: React.FC<{
           <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider">
             Total Approved Expenses
           </span>
-          <div className="text-2xl font-extrabold text-neutral-900 mt-1">
+          <div className="text-2xl font-extrabold text-neutral-900 mt-1 tabular-nums">
             {formatMWK(totalSpent)}
           </div>
-          <span className="text-[11px] text-rose-600 font-medium mt-1 inline-block">
-            Disbursed for utilities & goods
+          <span className="text-[11px] text-rose-700 font-medium mt-1 inline-block">
+            Disbursed for utilities &amp; goods
           </span>
         </div>
 
@@ -87,8 +103,12 @@ export const ExpenseManagementView: React.FC<{
           <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider">
             Remaining Group Treasury
           </span>
-          <div className={`text-2xl font-extrabold mt-1 ${remainingFunds >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-            {formatMWK(remainingFunds)}
+          <div
+            className={`text-2xl font-extrabold mt-1 tabular-nums ${
+              remainingFunds >= 0 ? 'text-emerald-700' : 'text-rose-700'
+            }`}
+          >
+            {formatSignedMWK(remainingFunds)}
           </div>
           <span className="text-[11px] text-neutral-500 font-medium mt-1 inline-block">
             {remainingFunds >= 0 ? 'Unallocated reserve balance' : 'Overdraft deficit'}
@@ -98,13 +118,33 @@ export const ExpenseManagementView: React.FC<{
 
       {/* Expenses Table */}
       <div className="bg-white rounded-2xl border border-neutral-200 overflow-hidden shadow-xs">
-        <div className="p-4 border-b border-neutral-100 flex items-center justify-between">
-          <h3 className="font-bold text-neutral-900 text-sm">
-            Disbursement Ledger
-          </h3>
-          <span className="text-xs text-neutral-500">
-            {expenses.length} recorded items
-          </span>
+        <div className="p-4 border-b border-neutral-100 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <h3 className="font-bold text-neutral-900 text-sm">
+              Disbursement Ledger
+            </h3>
+            <span className="text-xs text-neutral-500 tabular-nums">
+              {filteredExpenses.length} of {groupExpenses.length} recorded items
+            </span>
+          </div>
+
+          <select
+            value={filterCategory}
+            onChange={(e) => setFilterCategory(e.target.value)}
+            aria-label="Filter expenses by category"
+            className="bg-neutral-50 border border-neutral-200 rounded-lg px-3 py-1.5 text-xs font-medium text-neutral-800 focus:outline-none focus:ring-2 focus:ring-neutral-900"
+          >
+            <option value="all">All Categories</option>
+            <option value="electricity">Electricity</option>
+            <option value="water">Water Utility</option>
+            <option value="rent">Rent</option>
+            <option value="internet">Internet / WiFi</option>
+            <option value="security">Security</option>
+            <option value="waste">Waste Disposal</option>
+            <option value="groceries">Shared Groceries</option>
+            <option value="maintenance">Maintenance</option>
+            <option value="other">Other</option>
+          </select>
         </div>
 
         <div className="overflow-x-auto">
@@ -124,16 +164,18 @@ export const ExpenseManagementView: React.FC<{
               {filteredExpenses.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-10 text-center text-neutral-400">
-                    No expenses recorded yet.
+                    No expenses match the selected filter.
                   </td>
                 </tr>
               ) : (
-                filteredExpenses.map(e => (
+                filteredExpenses.map((e) => (
                   <tr key={e.id} className="hover:bg-neutral-50/60 transition-colors">
                     <td className="py-3 px-4">
                       <div className="font-bold text-neutral-900">{e.name}</div>
                       {e.description && (
-                        <div className="text-[11px] text-neutral-400 line-clamp-1">{e.description}</div>
+                        <div className="text-[11px] text-neutral-400 line-clamp-1">
+                          {e.description}
+                        </div>
                       )}
                     </td>
 
@@ -143,12 +185,16 @@ export const ExpenseManagementView: React.FC<{
                       </span>
                     </td>
 
-                    <td className="py-3 px-4 font-bold text-neutral-900 text-sm">
+                    <td className="py-3 px-4 font-bold text-neutral-900 text-sm tabular-nums">
                       {formatMWK(e.amount)}
                     </td>
 
-                    <td className="py-3 px-4 text-neutral-500">
-                      {new Date(e.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                    <td className="py-3 px-4 text-neutral-500 tabular-nums">
+                      {new Date(e.date).toLocaleDateString('en-GB', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric',
+                      })}
                     </td>
 
                     <td className="py-3 px-4 font-mono text-[11px] text-neutral-700">
@@ -180,13 +226,13 @@ export const ExpenseManagementView: React.FC<{
                       {e.status === 'pending_approval' && canApprove ? (
                         <div className="inline-flex gap-1.5">
                           <button
-                            onClick={() => approveExpense(e.id, true)}
+                            onClick={() => handleApproval(e.id, true)}
                             className="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-md text-xs font-semibold cursor-pointer"
                           >
                             Approve
                           </button>
                           <button
-                            onClick={() => approveExpense(e.id, false)}
+                            onClick={() => handleApproval(e.id, false)}
                             className="bg-neutral-100 hover:bg-rose-50 text-rose-600 px-2 py-1 rounded-md text-xs font-semibold cursor-pointer"
                           >
                             Decline

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { ExpenseCategory } from '../../types';
+import { parseMWKInput } from '../../utils/financialConfig';
 import { X, Receipt, Plus, AlertCircle, CheckCircle } from 'lucide-react';
 
 interface RecordExpenseModalProps {
@@ -24,14 +25,16 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
 
   if (!isOpen) return null;
 
-  if (!currentGroup) {
+  if (!currentGroup || !currentUser) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
         <div className="bg-white w-full max-w-sm rounded-2xl p-6 text-center space-y-3">
-          <p className="font-bold text-neutral-800 text-sm">Please create or select a financial group first.</p>
+          <p className="font-bold text-neutral-800 text-sm">
+            Please create or select a financial group first.
+          </p>
           <button
             onClick={onClose}
-            className="bg-neutral-900 text-white px-4 py-2 rounded-xl text-xs font-semibold"
+            className="bg-neutral-900 text-white px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer"
           >
             Close
           </button>
@@ -44,9 +47,9 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
     e.preventDefault();
     setError('');
 
-    const numericAmount = Number(amount);
-    if (!numericAmount || numericAmount <= 0) {
-      setError('Please provide a valid expense amount greater than zero.');
+    const parsedAmount = parseMWKInput(amount);
+    if (!parsedAmount.valid) {
+      setError(parsedAmount.error || 'Please provide a valid whole-MWK expense amount.');
       return;
     }
 
@@ -55,16 +58,21 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
       return;
     }
 
-    recordExpense({
+    const result = recordExpense({
       groupId: currentGroup.id,
       name: name.trim(),
       category,
-      amount: numericAmount,
+      amount: parsedAmount.value,
       date: new Date().toISOString(),
       description: description.trim(),
       responsiblePersonId: currentUser.id,
       receiptNumber: receiptNumber.trim() || undefined,
     });
+
+    if (!result.success) {
+      setError(result.error || 'Could not save expense.');
+      return;
+    }
 
     setSuccess(true);
   };
@@ -86,7 +94,7 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
         <div className="px-6 py-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50/50">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-neutral-900 text-white flex items-center justify-center font-bold text-sm">
-              <Receipt className="w-4 h-4 text-emerald-400" />
+              <Receipt className="w-4 h-4 text-[#D5A52B]" />
             </div>
             <div>
               <h3 className="font-bold text-neutral-900 text-base leading-tight">
@@ -97,7 +105,7 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
               </p>
             </div>
           </div>
-          <button 
+          <button
             onClick={resetAndClose}
             className="text-neutral-400 hover:text-neutral-700 p-1.5 rounded-lg hover:bg-neutral-100 transition-colors cursor-pointer"
             aria-label="Close dialog"
@@ -113,10 +121,11 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
                 <CheckCircle className="w-6 h-6" />
               </div>
               <h4 className="font-bold text-neutral-900 text-lg">
-                Expense Successfully Logged!
+                Expense Logged
               </h4>
               <p className="text-xs text-neutral-600">
-                Financial reconciliation ledger has been updated for <strong className="text-neutral-900">{currentGroup.name}</strong>.
+                Financial reconciliation ledger has been updated for{' '}
+                <strong className="text-neutral-900">{currentGroup.name}</strong>.
               </p>
               <div className="pt-2">
                 <button
@@ -177,12 +186,12 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
                     Amount Paid (MWK) *
                   </label>
                   <input
-                    type="number"
-                    min="1"
+                    type="text"
+                    inputMode="numeric"
                     placeholder="e.g. 35000"
                     value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    className="w-full bg-white border border-neutral-200 rounded-xl px-3.5 py-2 text-sm font-bold text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900"
+                    onChange={(e) => setAmount(e.target.value.replace(/[^\d]/g, ''))}
+                    className="w-full bg-white border border-neutral-200 rounded-xl px-3.5 py-2 text-sm font-bold text-neutral-900 tabular-nums focus:outline-none focus:ring-2 focus:ring-neutral-900"
                     required
                   />
                 </div>

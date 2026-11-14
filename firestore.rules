@@ -2,18 +2,22 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Default deny catch-all
+    // Global default deny catch-all
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Helper functions
+    // Core helper functions
     function isValidId(id) {
       return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
     function isSignedIn() {
       return request.auth != null;
+    }
+
+    function isVerifiedAccount() {
+      return isSignedIn() && request.auth.token.email_verified == true;
     }
 
     function isOwner(userId) {
@@ -28,157 +32,337 @@ service cloud.firestore {
       return resource.data;
     }
 
-    // Admin helper
+    // Verified super admin claim (no database lookup; safe inside list rules)
+    function isSuperAdminToken() {
+      return isVerifiedAccount() && request.auth.token.email == 'cchilongo88@gmail.com';
+    }
+
+    // Full super admin check (for single-doc and subcollection rules)
     function isSuperAdmin() {
-      return isSignedIn() && (
-        request.auth.token.email == 'cchilongo88@gmail.com' ||
-        request.auth.token.email == 'admin@klarency.mw' ||
+      return isSuperAdminToken() || (
+        isVerifiedAccount() &&
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
 
-    // Check if user is a member of the group
+    // Check if user is an enrolled group member or group admin
     function isGroupMember(groupId) {
       return isSignedIn() && (
         isSuperAdmin() ||
-        exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)) ||
-        get(/databases/$(database)/documents/groups/$(groupId)).data.adminId == request.auth.uid
+        (
+          exists(/databases/$(database)/documents/groups/$(groupId)) && (
+            get(/databases/$(database)/documents/groups/$(groupId)).data.adminId == request.auth.uid ||
+            ('treasurerId' in get(/databases/$(database)/documents/groups/$(groupId)).data &&
+              get(/databases/$(database)/documents/groups/$(groupId)).data.treasurerId == request.auth.uid)
+          )
+        ) ||
+        exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid))
       );
     }
 
     // Check if user is group admin or treasurer
     function isGroupManager(groupId) {
-      return isSignedIn() && (
+      return isVerifiedAccount() && (
         isSuperAdmin() ||
-        get(/databases/$(database)/documents/groups/$(groupId)).data.adminId == request.auth.uid ||
-        get(/databases/$(database)/documents/groups/$(groupId)).data.treasurerId == request.auth.uid ||
+        (
+          exists(/databases/$(database)/documents/groups/$(groupId)) && (
+            get(/databases/$(database)/documents/groups/$(groupId)).data.adminId == request.auth.uid ||
+            ('treasurerId' in get(/databases/$(database)/documents/groups/$(groupId)).data &&
+              get(/databases/$(database)/documents/groups/$(groupId)).data.treasurerId == request.auth.uid)
+          )
+        ) ||
         (
           exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)) &&
-          get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.roleInGroup in ['admin', 'treasurer']
+          get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.roleInGroup in ['admin', 'treasurer'] &&
+          get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.status == 'active'
         )
       );
     }
 
-    // Validation helpers
+    // Schema validators aligned with firebase-blueprint.json
     function isValidUser(data) {
       return data.keys().hasAll(['id', 'name', 'email', 'role', 'createdAt']) &&
-             data.id is string && data.id.size() <= 128 &&
+             data.keys().hasOnly(['id', 'name', 'email', 'phone', 'role', 'roomNumber', 'avatarUrl', 'createdAt']) &&
+             isValidId(data.id) &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
-             data.email is string && data.email.size() <= 100 &&
-             data.role in ['super_admin', 'group_admin', 'treasurer', 'member'];
+             data.email is string && data.email.size() > 0 && data.email.size() <= 120 &&
+             data.role in ['super_admin', 'group_admin', 'treasurer', 'member'] &&
+             data.createdAt is string && data.createdAt.size() <= 64;
     }
 
     function isValidGroup(data) {
       return data.keys().hasAll(['id', 'name', 'category', 'adminId', 'defaultCurrency', 'joinCode', 'createdAt']) &&
-             data.id is string && data.id.size() <= 128 &&
-             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             isValidId(data.id) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
              data.category in ['house', 'hostel', 'workplace', 'community', 'church', 'project'] &&
-             data.adminId is string && data.adminId.size() <= 128 &&
-             data.defaultCurrency is string && data.defaultCurrency.size() <= 10;
+             isValidId(data.adminId) &&
+             data.defaultCurrency is string && data.defaultCurrency.size() > 0 && data.defaultCurrency.size() <= 10 &&
+             data.joinCode is string && data.joinCode.size() > 0 && data.joinCode.size() <= 50 &&
+             (!('status' in data) || data.status in ['active', 'archived']);
+    }
+
+    function isValidGroupMember(data) {
+      return data.keys().hasAll(['id', 'groupId', 'userId', 'name', 'email', 'roleInGroup', 'joinedAt', 'status']) &&
+             isValidId(data.id) &&
+             isValidId(data.groupId) &&
+             isValidId(data.userId) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
+             data.email is string && data.email.size() <= 120 &&
+             data.roleInGroup in ['admin', 'treasurer', 'member'] &&
+             data.status in ['active', 'suspended', 'removed', 'departed'] &&
+             (!('stoveType' in data) || data.stoveType == null || data.stoveType in ['electric', 'non_electric']);
+    }
+
+    function isValidContribution(data) {
+      return data.keys().hasAll(['id', 'groupId', 'title', 'category', 'totalTargetAmount', 'deadline', 'status', 'createdAt']) &&
+             isValidId(data.id) &&
+             isValidId(data.groupId) &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 120 &&
+             data.category in ['electricity', 'water', 'rent', 'internet', 'security', 'waste', 'groceries', 'maintenance', 'other'] &&
+             data.totalTargetAmount is number && data.totalTargetAmount >= 0 &&
+             data.status in ['active', 'closed'];
+    }
+
+    function isValidAssignment(data) {
+      return data.keys().hasAll(['id', 'contributionId', 'groupId', 'memberId', 'assignedAmount', 'assignedDate', 'deadline', 'status']) &&
+             isValidId(data.id) &&
+             isValidId(data.contributionId) &&
+             isValidId(data.groupId) &&
+             isValidId(data.memberId) &&
+             data.assignedAmount is number && data.assignedAmount > 0 &&
+             data.status in ['unpaid', 'partially_paid', 'submitted', 'pending_verification', 'verified', 'rejected', 'disputed', 'reversed', 'overdue', 'fully_settled'] &&
+             (!('stoveTypeAtAssignment' in data) || data.stoveTypeAtAssignment == null || data.stoveTypeAtAssignment in ['electric', 'non_electric']);
     }
 
     function isValidPayment(data) {
       return data.keys().hasAll(['id', 'assignmentId', 'groupId', 'memberId', 'amountReceived', 'paymentDate', 'paymentMethod', 'transactionReference', 'collectorId', 'verificationStatus', 'createdAt']) &&
+             isValidId(data.id) &&
+             isValidId(data.assignmentId) &&
+             isValidId(data.groupId) &&
+             isValidId(data.memberId) &&
+             isValidId(data.collectorId) &&
              data.amountReceived is number && data.amountReceived > 0 &&
              data.paymentMethod in ['airtel_money', 'tnm_mpamba', 'bank_transfer', 'cash', 'other'] &&
              data.transactionReference is string && data.transactionReference.size() > 0 && data.transactionReference.size() <= 100 &&
-             data.verificationStatus in ['verified', 'pending_verification', 'rejected'];
+             data.verificationStatus in ['submitted', 'pending_verification', 'verified', 'rejected', 'disputed', 'reversed'];
     }
 
     function isValidCommitment(data) {
       return data.keys().hasAll(['id', 'assignmentId', 'memberId', 'groupId', 'originalOutstandingAmount', 'currentOutstandingAmount', 'commitmentDate', 'promisedDate', 'collectorId', 'status']) &&
-             data.originalOutstandingAmount is number &&
-             data.currentOutstandingAmount is number &&
+             isValidId(data.id) &&
+             isValidId(data.assignmentId) &&
+             isValidId(data.memberId) &&
+             isValidId(data.groupId) &&
+             data.originalOutstandingAmount is number && data.originalOutstandingAmount >= 0 &&
+             data.currentOutstandingAmount is number && data.currentOutstandingAmount >= 0 &&
              data.status in ['active', 'due_soon', 'due_today', 'completed', 'overdue', 'extension_requested', 'revised'];
+    }
+
+    function isValidCommitmentEvent(data) {
+      return data.keys().hasAll(['id', 'commitmentId', 'date', 'eventType', 'notes', 'recordedBy']) &&
+             isValidId(data.id) &&
+             isValidId(data.commitmentId) &&
+             data.eventType in ['created', 'reminder_sent', 'extension_requested', 'extension_approved', 'extension_declined', 'extension_granted', 'partial_payment', 'completed', 'broken', 'revised'] &&
+             data.notes is string && data.notes.size() > 0 && data.notes.size() <= 500;
     }
 
     function isValidExpense(data) {
       return data.keys().hasAll(['id', 'groupId', 'name', 'category', 'amount', 'date', 'responsiblePersonId', 'status', 'createdAt']) &&
+             isValidId(data.id) &&
+             isValidId(data.groupId) &&
              data.amount is number && data.amount > 0 &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
+             data.category in ['electricity', 'water', 'rent', 'internet', 'security', 'waste', 'groceries', 'maintenance', 'other'] &&
              data.status in ['approved', 'pending_approval', 'rejected'];
     }
 
-    // User collection
+    function isValidDispute(data) {
+      return data.keys().hasAll(['id', 'groupId', 'memberId', 'title', 'description', 'status', 'createdAt', 'updatedAt']) &&
+             isValidId(data.id) &&
+             isValidId(data.groupId) &&
+             isValidId(data.memberId) &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 150 &&
+             data.description is string && data.description.size() > 0 && data.description.size() <= 1000 &&
+             data.status in ['open', 'under_review', 'resolved', 'rejected'];
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['id', 'actorId', 'actorName', 'action', 'details', 'timestamp']) &&
+             isValidId(data.id) &&
+             isValidId(data.actorId) &&
+             data.actorName is string && data.actorName.size() > 0 && data.actorName.size() <= 100 &&
+             data.action is string && data.action.size() > 0 && data.action.size() <= 100 &&
+             data.details is string && data.details.size() > 0 && data.details.size() <= 1000;
+    }
+
+    function isValidCommunication(data) {
+      return data.keys().hasAll(['id', 'groupId', 'subject', 'type', 'targetAudience', 'recipientCount', 'sentAt', 'sentBy']) &&
+             isValidId(data.id) &&
+             isValidId(data.groupId) &&
+             data.subject is string && data.subject.size() > 0 && data.subject.size() <= 200 &&
+             data.type in ['announcement', 'financial_reminder', 'payment_confirmation', 'deadline_alert', 'cleared_balance'] &&
+             data.targetAudience in ['all_active', 'outstanding_only', 'overdue_only', 'paid_only', 'individual'] &&
+             data.recipientCount is number && data.recipientCount >= 0;
+    }
+
+    // Super admin registry (managed server-side only)
+    match /admins/{adminId} {
+      allow get: if isOwner(adminId);
+      allow list, write: if false;
+    }
+
+    // Authenticated administrator profiles (PII protected)
     match /users/{userId} {
-      allow get: if isSignedIn() && (isOwner(userId) || isSuperAdmin());
-      allow list: if isSuperAdmin();
-      allow create: if isSignedIn() && (isOwner(userId) || isSuperAdmin()) && isValidUser(incoming());
-      allow update: if isSignedIn() && (isOwner(userId) || isSuperAdmin()) && isValidUser(incoming()) &&
-                    incoming().id == existing().id;
-      allow delete: if isSuperAdmin();
+      allow get: if isValidId(userId) && isSignedIn() && (isOwner(userId) || isSuperAdmin());
+      allow list: if isSuperAdminToken();
+      allow create: if isValidId(userId) && isVerifiedAccount() && isValidUser(incoming()) && (
+        isSuperAdmin() ||
+        (isOwner(userId) && incoming().id == userId && incoming().role in ['group_admin', 'treasurer', 'member'])
+      );
+      allow update: if isValidId(userId) && isVerifiedAccount() && isValidUser(incoming()) &&
+                    incoming().id == existing().id && (
+                      isSuperAdmin() ||
+                      (isOwner(userId) && incoming().role == existing().role)
+                    );
+      allow delete: if isValidId(userId) && isSuperAdmin();
 
       match /notifications/{notificationId} {
-        allow get, list: if isOwner(userId) || isSuperAdmin();
-        allow create: if isSignedIn();
-        allow update: if isOwner(userId) || isSuperAdmin();
-        allow delete: if isOwner(userId) || isSuperAdmin();
+        allow get: if isValidId(userId) && isValidId(notificationId) && (isOwner(userId) || isSuperAdmin());
+        allow list: if isOwner(userId) || isSuperAdminToken();
+        allow create: if isValidId(userId) && isValidId(notificationId) && isVerifiedAccount() &&
+                      incoming().userId == userId;
+        allow update: if isValidId(userId) && isValidId(notificationId) && (isOwner(userId) || isSuperAdmin()) &&
+                      incoming().userId == existing().userId;
+        allow delete: if isValidId(userId) && isValidId(notificationId) && (isOwner(userId) || isSuperAdmin());
       }
     }
 
-    // Groups collection
+    // Shared financial groups & scoped subcollections
     match /groups/{groupId} {
-      allow get: if isGroupMember(groupId) || isSuperAdmin();
-      allow list: if isSignedIn();
-      allow create: if isSignedIn() && isValidGroup(incoming());
-      allow update: if isGroupManager(groupId) && isValidGroup(incoming()) && incoming().id == existing().id;
-      allow delete: if isSuperAdmin() || (isSignedIn() && existing().adminId == request.auth.uid);
+      allow get: if isValidId(groupId) && isGroupMember(groupId);
+      allow list: if isSignedIn() && (
+        isSuperAdminToken() ||
+        resource.data.adminId == request.auth.uid ||
+        ('treasurerId' in resource.data && resource.data.treasurerId == request.auth.uid)
+      );
+      allow create: if isValidId(groupId) && isVerifiedAccount() && isValidGroup(incoming()) &&
+                    incoming().id == groupId &&
+                    (isSuperAdmin() || incoming().adminId == request.auth.uid);
+      allow update: if isValidId(groupId) && isGroupManager(groupId) && isValidGroup(incoming()) &&
+                    (!('id' in existing()) || incoming().id == existing().id) &&
+                    (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt);
+      allow delete: if isValidId(groupId) && (isSuperAdmin() || (isVerifiedAccount() && existing().adminId == request.auth.uid));
 
       match /members/{memberId} {
-        allow get, list: if isGroupMember(groupId);
-        allow create, update: if isGroupManager(groupId) || (isSignedIn() && request.auth.uid == memberId);
-        allow delete: if isGroupManager(groupId);
+        allow get: if isValidId(groupId) && isValidId(memberId) && isGroupMember(groupId);
+        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow create: if isValidId(groupId) && isValidId(memberId) && isGroupManager(groupId) &&
+                      isValidGroupMember(incoming()) && incoming().groupId == groupId;
+        allow update: if isValidId(groupId) && isValidId(memberId) && isGroupManager(groupId) &&
+                      isValidGroupMember(incoming()) &&
+                      (!('id' in existing()) || incoming().id == existing().id) &&
+                      (!('groupId' in existing()) || incoming().groupId == existing().groupId);
+        allow delete: if isValidId(groupId) && isValidId(memberId) && isSuperAdmin();
       }
 
       match /contributions/{contributionId} {
-        allow get, list: if isGroupMember(groupId);
-        allow create, update, delete: if isGroupManager(groupId);
+        allow get: if isValidId(groupId) && isValidId(contributionId) && isGroupMember(groupId);
+        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow create: if isValidId(groupId) && isValidId(contributionId) && isGroupManager(groupId) &&
+                      isValidContribution(incoming()) && incoming().groupId == groupId;
+        allow update: if isValidId(groupId) && isValidId(contributionId) && isGroupManager(groupId) &&
+                      isValidContribution(incoming()) &&
+                      (!('id' in existing()) || incoming().id == existing().id) &&
+                      (!('groupId' in existing()) || incoming().groupId == existing().groupId);
+        allow delete: if isValidId(groupId) && isValidId(contributionId) && isGroupManager(groupId);
       }
 
       match /assignments/{assignmentId} {
-        allow get, list: if isGroupMember(groupId);
-        allow create, update: if isGroupManager(groupId);
-        allow delete: if isGroupManager(groupId);
+        allow get: if isValidId(groupId) && isValidId(assignmentId) && isGroupMember(groupId);
+        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow create: if isValidId(groupId) && isValidId(assignmentId) && isGroupManager(groupId) &&
+                      isValidAssignment(incoming()) && incoming().groupId == groupId;
+        allow update: if isValidId(groupId) && isValidId(assignmentId) && isGroupManager(groupId) &&
+                      isValidAssignment(incoming()) &&
+                      (!('id' in existing()) || incoming().id == existing().id) &&
+                      (!('groupId' in existing()) || incoming().groupId == existing().groupId);
+        allow delete: if isValidId(groupId) && isValidId(assignmentId) && isGroupManager(groupId);
       }
 
       match /payments/{paymentId} {
-        allow get, list: if isGroupMember(groupId);
-        allow create: if isGroupMember(groupId) && isValidPayment(incoming());
-        allow update: if isGroupManager(groupId) && isValidPayment(incoming()) && incoming().id == existing().id;
-        allow delete: if isSuperAdmin();
+        allow get: if isValidId(groupId) && isValidId(paymentId) && isGroupMember(groupId);
+        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow create: if isValidId(groupId) && isValidId(paymentId) && isGroupManager(groupId) &&
+                      isValidPayment(incoming()) && incoming().groupId == groupId &&
+                      incoming().collectorId == request.auth.uid;
+        allow update: if isValidId(groupId) && isValidId(paymentId) && isGroupManager(groupId) &&
+                      isValidPayment(incoming()) &&
+                      (!('id' in existing()) || incoming().id == existing().id) &&
+                      (!('groupId' in existing()) || incoming().groupId == existing().groupId) &&
+                      incoming().amountReceived == existing().amountReceived &&
+                      (!('collectorId' in existing()) || incoming().collectorId == existing().collectorId);
+        allow delete: if false; // Financial ledger records are immutable; reverse via status instead
       }
 
       match /commitments/{commitmentId} {
-        allow get, list: if isGroupMember(groupId);
-        allow create: if isGroupMember(groupId) && isValidCommitment(incoming());
-        allow update: if isGroupMember(groupId) && isValidCommitment(incoming()) && incoming().id == existing().id;
-        allow delete: if isGroupManager(groupId);
+        allow get: if isValidId(groupId) && isValidId(commitmentId) && isGroupMember(groupId);
+        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow create: if isValidId(groupId) && isValidId(commitmentId) && isGroupManager(groupId) &&
+                      isValidCommitment(incoming()) && incoming().groupId == groupId;
+        allow update: if isValidId(groupId) && isValidId(commitmentId) && isGroupManager(groupId) &&
+                      isValidCommitment(incoming()) &&
+                      (!('id' in existing()) || incoming().id == existing().id) &&
+                      (!('groupId' in existing()) || incoming().groupId == existing().groupId);
+        allow delete: if isValidId(groupId) && isValidId(commitmentId) && isGroupManager(groupId);
       }
 
       match /commitmentEvents/{eventId} {
-        allow get, list: if isGroupMember(groupId);
-        allow create: if isGroupMember(groupId);
-        allow update, delete: if false; // Immutable audit log
+        allow get: if isValidId(groupId) && isValidId(eventId) && isGroupMember(groupId);
+        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow create: if isValidId(groupId) && isValidId(eventId) && isGroupManager(groupId) &&
+                      isValidCommitmentEvent(incoming());
+        allow update, delete: if false; // Immutable commitment audit log
       }
 
       match /expenses/{expenseId} {
-        allow get, list: if isGroupMember(groupId);
-        allow create: if isGroupMember(groupId) && isValidExpense(incoming());
-        allow update: if isGroupManager(groupId) && isValidExpense(incoming());
-        allow delete: if isGroupManager(groupId);
+        allow get: if isValidId(groupId) && isValidId(expenseId) && isGroupMember(groupId);
+        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow create: if isValidId(groupId) && isValidId(expenseId) && isGroupManager(groupId) &&
+                      isValidExpense(incoming()) && incoming().groupId == groupId;
+        allow update: if isValidId(groupId) && isValidId(expenseId) && isGroupManager(groupId) &&
+                      isValidExpense(incoming()) &&
+                      (!('id' in existing()) || incoming().id == existing().id) &&
+                      (!('groupId' in existing()) || incoming().groupId == existing().groupId);
+        allow delete: if isValidId(groupId) && isValidId(expenseId) && isGroupManager(groupId);
       }
 
       match /disputes/{disputeId} {
-        allow get, list: if isGroupMember(groupId);
-        allow create: if isGroupMember(groupId);
-        allow update: if isGroupManager(groupId) || (isGroupMember(groupId) && existing().memberId == request.auth.uid);
-        allow delete: if false; // Immutable audit history
+        allow get: if isValidId(groupId) && isValidId(disputeId) && isGroupMember(groupId);
+        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow create: if isValidId(groupId) && isValidId(disputeId) && isGroupMember(groupId) &&
+                      isValidDispute(incoming()) && incoming().groupId == groupId;
+        allow update: if isValidId(groupId) && isValidId(disputeId) && isGroupManager(groupId) &&
+                      isValidDispute(incoming()) &&
+                      (!('id' in existing()) || incoming().id == existing().id) &&
+                      (!('groupId' in existing()) || incoming().groupId == existing().groupId);
+        allow delete: if false; // Immutable dispute history
       }
 
       match /auditLogs/{logId} {
-        allow get, list: if isGroupMember(groupId);
-        allow create: if isGroupMember(groupId);
+        allow get: if isValidId(groupId) && isValidId(logId) && isGroupMember(groupId);
+        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow create: if isValidId(groupId) && isValidId(logId) && isGroupMember(groupId) &&
+                      isValidAuditLog(incoming());
         allow update, delete: if false; // Immutable audit trail
+      }
+
+      match /communications/{commId} {
+        allow get: if isValidId(groupId) && isValidId(commId) && isGroupMember(groupId);
+        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow create: if isValidId(groupId) && isValidId(commId) && isGroupManager(groupId) &&
+                      isValidCommunication(incoming()) && incoming().groupId == groupId;
+        allow update: if false;
+        allow delete: if isValidId(groupId) && isValidId(commId) && isSuperAdmin();
       }
     }
   }

@@ -1,15 +1,23 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  computeCommitmentCountdown, 
-  formatMWK, 
-  CommitmentCountdownResult 
+import {
+  computeCommitmentCountdown,
+  formatMWK,
+  CommitmentCountdownResult,
 } from '../../utils/financialCalculations';
-import { PaymentCommitment, User, Contribution } from '../../types';
-import { Clock, AlertTriangle, CheckCircle2, Calendar, UserCheck, ArrowRight } from 'lucide-react';
+import { toSafeIntMWK } from '../../utils/financialConfig';
+import { PaymentCommitment, Contribution } from '../../types';
+import { Clock, AlertTriangle, CheckCircle2, ArrowRight } from 'lucide-react';
+
+interface CommitmentMemberSummary {
+  id: string;
+  name: string;
+  email?: string;
+  avatarUrl?: string;
+}
 
 interface CommitmentCardProps {
   commitment: PaymentCommitment;
-  member?: User;
+  member?: CommitmentMemberSummary | null;
   contribution?: Contribution;
   onRecordPaymentClick?: () => void;
   onRequestExtensionClick?: () => void;
@@ -26,10 +34,10 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
   onApproveExtensionClick,
   canManage = false,
 }) => {
-  const [countdown, setCountdown] = useState<CommitmentCountdownResult>(() => 
+  const [countdown, setCountdown] = useState<CommitmentCountdownResult>(() =>
     computeCommitmentCountdown(
-      commitment.promisedDate, 
-      commitment.status, 
+      commitment.promisedDate,
+      commitment.status,
       commitment.currentOutstandingAmount
     )
   );
@@ -38,8 +46,8 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
     const timer = setInterval(() => {
       setCountdown(
         computeCommitmentCountdown(
-          commitment.promisedDate, 
-          commitment.status, 
+          commitment.promisedDate,
+          commitment.status,
           commitment.currentOutstandingAmount
         )
       );
@@ -47,19 +55,16 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
     return () => clearInterval(timer);
   }, [commitment.promisedDate, commitment.status, commitment.currentOutstandingAmount]);
 
-  const originalAmount = commitment.originalOutstandingAmount;
-  const currentAmount = commitment.currentOutstandingAmount;
+  const originalAmount = toSafeIntMWK(commitment.originalOutstandingAmount);
+  const currentAmount = toSafeIntMWK(commitment.currentOutstandingAmount);
   const paidAgainstCommitment = Math.max(0, originalAmount - currentAmount);
-  const completionPercentage = originalAmount > 0 
-    ? Math.round((paidAgainstCommitment / originalAmount) * 100) 
-    : 100;
+  const completionPercentage =
+    originalAmount > 0 ? Math.min(100, Math.round((paidAgainstCommitment / originalAmount) * 100)) : 100;
 
-  // Status badge styling
   const getBadgeStyle = () => {
     if (countdown.computedStatus === 'completed' || currentAmount <= 0) {
       return {
         bg: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-        dot: 'bg-emerald-500',
         label: 'Honoured & Completed',
         icon: CheckCircle2,
       };
@@ -67,7 +72,6 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
     if (countdown.computedStatus === 'overdue' || countdown.isOverdue) {
       return {
         bg: 'bg-rose-50 text-rose-800 border-rose-200',
-        dot: 'bg-rose-500 animate-pulse',
         label: 'Overdue Deadline',
         icon: AlertTriangle,
       };
@@ -75,7 +79,6 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
     if (commitment.status === 'extension_requested') {
       return {
         bg: 'bg-amber-50 text-amber-900 border-amber-300',
-        dot: 'bg-amber-500',
         label: 'Extension Requested',
         icon: Clock,
       };
@@ -83,7 +86,6 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
     if (countdown.isDueToday) {
       return {
         bg: 'bg-amber-50 text-amber-800 border-amber-200',
-        dot: 'bg-amber-500',
         label: 'Due Today',
         icon: Clock,
       };
@@ -91,14 +93,12 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
     if (countdown.isDueSoon) {
       return {
         bg: 'bg-yellow-50 text-yellow-800 border-yellow-200',
-        dot: 'bg-yellow-500',
         label: 'Due Soon (<= 3 Days)',
         icon: Clock,
       };
     }
     return {
       bg: 'bg-neutral-100 text-neutral-800 border-neutral-200',
-      dot: 'bg-neutral-500',
       label: 'Active Commitment',
       icon: Clock,
     };
@@ -109,19 +109,18 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
 
   return (
     <div className="bg-white rounded-2xl border border-neutral-200/80 shadow-xs hover:shadow-md transition-all duration-200 overflow-hidden flex flex-col justify-between">
-      {/* Top Banner / Status */}
       <div className="p-5 pb-4">
         <div className="flex items-start justify-between gap-3 mb-3">
           <div className="flex items-center gap-2.5">
             {member?.avatarUrl ? (
-              <img 
-                src={member.avatarUrl} 
-                alt={member.name} 
-                className="w-10 h-10 rounded-full object-cover border border-neutral-200" 
+              <img
+                src={member.avatarUrl}
+                alt={member.name}
+                className="w-10 h-10 rounded-full object-cover border border-neutral-200"
               />
             ) : (
               <div className="w-10 h-10 rounded-full bg-neutral-100 text-neutral-700 font-bold flex items-center justify-center text-sm border border-neutral-200">
-                {member?.name ? member.name.charAt(0) : 'M'}
+                {member?.name ? member.name.charAt(0).toUpperCase() : 'M'}
               </div>
             )}
             <div>
@@ -134,8 +133,10 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
             </div>
           </div>
 
-          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${badge.bg}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${badge.dot}`} />
+          <span
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${badge.bg}`}
+          >
+            <IconComponent className="w-3.5 h-3.5 shrink-0" />
             {badge.label}
           </span>
         </div>
@@ -144,24 +145,23 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
         <div className="bg-neutral-50 rounded-xl p-3.5 border border-neutral-100 mt-2">
           <div className="flex justify-between items-baseline mb-1">
             <span className="text-xs font-medium text-neutral-500">Remaining Promised</span>
-            <span className="text-lg font-extrabold text-neutral-900 tracking-tight">
+            <span className="text-lg font-extrabold text-neutral-900 tracking-tight tabular-nums">
               {formatMWK(currentAmount)}
             </span>
           </div>
 
-          <div className="flex justify-between text-xs text-neutral-500 mb-2">
+          <div className="flex justify-between text-xs text-neutral-500 mb-2 tabular-nums">
             <span>Original: {formatMWK(originalAmount)}</span>
             <span>Paid so far: {formatMWK(paidAgainstCommitment)}</span>
           </div>
 
-          {/* Progress bar */}
           <div className="w-full h-2 bg-neutral-200 rounded-full overflow-hidden">
-            <div 
+            <div
               className={`h-full transition-all duration-500 ${
-                currentAmount <= 0 
-                  ? 'bg-emerald-500' 
-                  : countdown.isOverdue 
-                    ? 'bg-rose-500' 
+                currentAmount <= 0
+                  ? 'bg-emerald-500'
+                  : countdown.isOverdue
+                    ? 'bg-rose-500'
                     : 'bg-neutral-900'
               }`}
               style={{ width: `${completionPercentage}%` }}
@@ -177,43 +177,53 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
               Commitment Deadline:
             </span>
             <span className="font-semibold text-neutral-800">
-              {new Date(commitment.promisedDate).toLocaleDateString('en-GB', { 
-                day: 'numeric', 
-                month: 'short', 
-                year: 'numeric' 
+              {new Date(commitment.promisedDate).toLocaleDateString('en-GB', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
               })}
             </span>
           </div>
 
           {currentAmount > 0 ? (
-            <div className={`grid grid-cols-4 gap-2 text-center p-2.5 rounded-xl ${
-              countdown.isOverdue 
-                ? 'bg-rose-50/70 border border-rose-100 text-rose-950' 
-                : 'bg-neutral-900 text-white'
-            }`}>
+            <div
+              className={`grid grid-cols-4 gap-2 text-center p-2.5 rounded-xl tabular-nums ${
+                countdown.isOverdue
+                  ? 'bg-rose-50/70 border border-rose-100 text-rose-950'
+                  : 'bg-neutral-900 text-white'
+              }`}
+            >
               <div className="flex flex-col">
                 <span className="text-xl font-bold font-mono tracking-tight leading-none">
                   {String(countdown.days).padStart(2, '0')}
                 </span>
-                <span className="text-[10px] uppercase tracking-wider text-neutral-400 mt-1">Days</span>
+                <span className="text-[10px] uppercase tracking-wider text-neutral-400 mt-1">
+                  Days
+                </span>
               </div>
               <div className="flex flex-col">
                 <span className="text-xl font-bold font-mono tracking-tight leading-none">
                   {String(countdown.hours).padStart(2, '0')}
                 </span>
-                <span className="text-[10px] uppercase tracking-wider text-neutral-400 mt-1">Hours</span>
+                <span className="text-[10px] uppercase tracking-wider text-neutral-400 mt-1">
+                  Hours
+                </span>
               </div>
               <div className="flex flex-col">
                 <span className="text-xl font-bold font-mono tracking-tight leading-none">
                   {String(countdown.minutes).padStart(2, '0')}
                 </span>
-                <span className="text-[10px] uppercase tracking-wider text-neutral-400 mt-1">Mins</span>
+                <span className="text-[10px] uppercase tracking-wider text-neutral-400 mt-1">
+                  Mins
+                </span>
               </div>
               <div className="flex flex-col">
                 <span className="text-xl font-bold font-mono tracking-tight leading-none">
                   {String(countdown.seconds).padStart(2, '0')}
                 </span>
-                <span className="text-[10px] uppercase tracking-wider text-neutral-400 mt-1">Secs</span>
+                <span className="text-[10px] uppercase tracking-wider text-neutral-400 mt-1">
+                  Secs
+                </span>
               </div>
             </div>
           ) : (
@@ -231,7 +241,8 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
 
           {commitment.extensionCount > 0 && (
             <div className="text-[11px] text-amber-700 bg-amber-50/60 rounded-md px-2 py-0.5 mt-2 inline-block">
-              Revised {commitment.extensionCount} {commitment.extensionCount === 1 ? 'time' : 'times'}
+              Revised {commitment.extensionCount}{' '}
+              {commitment.extensionCount === 1 ? 'time' : 'times'}
             </div>
           )}
         </div>
@@ -254,7 +265,7 @@ export const CommitmentCard: React.FC<CommitmentCardProps> = ({
             onClick={onApproveExtensionClick}
             className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold py-2 px-3 rounded-lg transition-colors cursor-pointer"
           >
-            Review Extension
+            Approve Extension
           </button>
         )}
 
