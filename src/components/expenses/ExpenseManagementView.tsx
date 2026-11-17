@@ -3,20 +3,28 @@ import { useApp } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
 import { formatMWK, formatSignedMWK } from '../../utils/financialCalculations';
 import { toSafeIntMWK } from '../../utils/financialConfig';
-import { canUserApproveExpenses } from '../../utils/centralizedFinancialAdmin';
+import {
+  canManageGroupRole,
+  canVerifyPaymentsRole,
+} from '../../utils/centralizedFinancialAdmin';
+import {
+  EXPENSE_CATEGORY_LABELS,
+  getExpenseCategoryLabel,
+} from '../../utils/groupPresets';
 import { EmptyState } from '../ui/EmptyState';
 import { Plus, CheckCircle2, Clock, XCircle, AlertCircle, Receipt } from 'lucide-react';
 
 export const ExpenseManagementView: React.FC<{
   onOpenRecordExpense: () => void;
 }> = ({ onOpenRecordExpense }) => {
-  const { expenses, payments, currentGroup, currentUser, approveExpense } = useApp();
+  const { expenses, payments, currentGroup, effectiveRole, approveExpense } = useApp();
   const { showToast } = useToast();
 
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const canApprove = canUserApproveExpenses(currentUser?.role);
+  const canApprove = canManageGroupRole(effectiveRole);
+  const canRecordExpense = canVerifyPaymentsRole(effectiveRole);
 
   const groupExpenses = currentGroup
     ? expenses.filter((e) => e.groupId === currentGroup.id)
@@ -60,21 +68,23 @@ export const ExpenseManagementView: React.FC<{
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
-            Expense Management &amp; Reconciliation
+            Group Expenses &amp; Transparency
           </h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-            Transparent tracking of where group contributions were spent (ESCOM tokens, water, rent, WiFi)
+            Clear breakdown of where group contributions were spent and remaining group balance
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={onOpenRecordExpense}
-          className="min-h-[44px] inline-flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer whitespace-nowrap"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Record New Expense</span>
-        </button>
+        {canRecordExpense && (
+          <button
+            type="button"
+            onClick={onOpenRecordExpense}
+            className="min-h-[44px] inline-flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Record New Expense</span>
+          </button>
+        )}
       </div>
 
       {actionError && (
@@ -109,13 +119,13 @@ export const ExpenseManagementView: React.FC<{
             {formatMWK(totalSpent)}
           </div>
           <span className="text-[11px] text-rose-700 dark:text-rose-400 font-medium mt-1 inline-block">
-            Disbursed for utilities &amp; goods
+            Spent from group funds
           </span>
         </div>
 
         <div className="bg-white dark:bg-[#0D1424] rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
           <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-            Remaining Group Treasury
+            Remaining Group Balance
           </span>
           <div
             className={`text-2xl font-extrabold font-mono mt-1 tabular-nums ${
@@ -127,7 +137,7 @@ export const ExpenseManagementView: React.FC<{
             {formatSignedMWK(remainingFunds)}
           </div>
           <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium mt-1 inline-block">
-            {remainingFunds >= 0 ? 'Unallocated reserve balance' : 'Overdraft deficit'}
+            {remainingFunds >= 0 ? 'Unspent reserve balance' : 'Overdraft deficit'}
           </span>
         </div>
       </div>
@@ -151,15 +161,11 @@ export const ExpenseManagementView: React.FC<{
             className="min-h-[40px] bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-medium text-slate-800 dark:text-slate-200 focus:outline-none"
           >
             <option value="all">All Categories</option>
-            <option value="electricity">Electricity</option>
-            <option value="water">Water Utility</option>
-            <option value="rent">Rent</option>
-            <option value="internet">Internet / WiFi</option>
-            <option value="security">Security</option>
-            <option value="waste">Waste Disposal</option>
-            <option value="groceries">Shared Groceries</option>
-            <option value="maintenance">Maintenance</option>
-            <option value="other">Other</option>
+            {Object.keys(EXPENSE_CATEGORY_LABELS).map((cat) => (
+              <option key={cat} value={cat}>
+                {getExpenseCategoryLabel(cat)}
+              </option>
+            ))}
           </select>
         </div>
 
@@ -172,9 +178,13 @@ export const ExpenseManagementView: React.FC<{
                   ? 'No group expenses recorded yet'
                   : 'No expenses in this category'
               }
-              description="Record ESCOM tokens, water bills, or maintenance payouts to reconcile against verified member inflows."
-              actionLabel="Record Expense"
-              onAction={onOpenRecordExpense}
+              description={
+                canRecordExpense
+                  ? 'Record ESCOM tokens, supplies, transport, or maintenance payouts so everyone can see how money was spent.'
+                  : 'When the admin or treasurer records how group money was spent, every item and receipt reference appears here.'
+              }
+              actionLabel={canRecordExpense ? 'Record Expense' : undefined}
+              onAction={canRecordExpense ? onOpenRecordExpense : undefined}
               secondaryActionLabel={filterCategory !== 'all' ? 'Show All Categories' : undefined}
               onSecondaryAction={
                 filterCategory !== 'all' ? () => setFilterCategory('all') : undefined
@@ -192,8 +202,8 @@ export const ExpenseManagementView: React.FC<{
                       <div className="font-bold text-sm text-slate-900 dark:text-white truncate">
                         {e.name}
                       </div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 capitalize mt-0.5">
-                        {e.category} ·{' '}
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        {getExpenseCategoryLabel(e.category)} ·{' '}
                         {new Date(e.date).toLocaleDateString('en-GB', {
                           day: 'numeric',
                           month: 'short',
@@ -272,8 +282,8 @@ export const ExpenseManagementView: React.FC<{
                         )}
                       </td>
 
-                      <td className="py-3 px-4 capitalize text-slate-600 dark:text-slate-300 font-semibold">
-                        {e.category}
+                      <td className="py-3 px-4 text-slate-600 dark:text-slate-300 font-semibold">
+                        {getExpenseCategoryLabel(e.category)}
                       </td>
 
                       <td className="py-3 px-4 font-bold font-mono text-slate-900 dark:text-white text-sm tabular-nums">

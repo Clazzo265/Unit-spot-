@@ -12,24 +12,28 @@
         "role": { "type": "string", "enum": ["super_admin", "group_admin", "treasurer", "member"] },
         "roomNumber": { "type": "string", "maxLength": 50 },
         "avatarUrl": { "type": "string", "maxLength": 500 },
+        "preferredLanguage": { "type": "string", "enum": ["en", "ny"] },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "name", "email", "role", "createdAt"]
     },
     "Group": {
       "title": "Group",
-      "description": "Financial circle such as a shared house, student hostel, workplace team or community group",
+      "description": "Shared financial circle such as a house, hostel, family, chilimba savings group, church, or team",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 128 },
         "name": { "type": "string", "maxLength": 120 },
         "description": { "type": "string", "maxLength": 500 },
-        "category": { "type": "string", "enum": ["house", "hostel", "workplace", "community", "church", "project"] },
+        "category": { "type": "string", "enum": ["house", "hostel", "family", "friends", "savings_group", "church", "business", "club", "community", "project", "workplace", "event", "other"] },
         "adminId": { "type": "string", "maxLength": 128 },
         "treasurerId": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array", "items": { "type": "string", "maxLength": 128 } },
         "defaultCurrency": { "type": "string", "maxLength": 10 },
         "paymentRules": { "type": "string", "maxLength": 1000 },
         "joinCode": { "type": "string", "maxLength": 50 },
+        "joinPolicy": { "type": "string", "enum": ["code_auto", "admin_approval"] },
+        "inviteRevoked": { "type": "boolean" },
         "status": { "type": "string", "enum": ["active", "archived"] },
         "archivedAt": { "type": "string", "format": "date-time" },
         "archivedBy": { "type": "string", "maxLength": 128 },
@@ -40,13 +44,51 @@
       },
       "required": ["id", "name", "category", "adminId", "defaultCurrency", "joinCode", "createdAt"]
     },
+    "GroupInvite": {
+      "title": "GroupInvite",
+      "description": "Minimal non-PII invite lookup mapping code to group preview and join policy",
+      "type": "object",
+      "properties": {
+        "inviteCode": { "type": "string", "maxLength": 50 },
+        "groupId": { "type": "string", "maxLength": 128 },
+        "groupName": { "type": "string", "maxLength": 120 },
+        "category": { "type": "string", "enum": ["house", "hostel", "family", "friends", "savings_group", "church", "business", "club", "community", "project", "workplace", "event", "other"] },
+        "joinPolicy": { "type": "string", "enum": ["code_auto", "admin_approval"] },
+        "revoked": { "type": "boolean" },
+        "adminId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["inviteCode", "groupId", "groupName", "category", "joinPolicy", "revoked", "adminId", "createdAt"]
+    },
+    "JoinRequest": {
+      "title": "JoinRequest",
+      "description": "Pending membership approval request submitted via invite code",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "groupId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 120 },
+        "email": { "type": "string", "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "inviteCode": { "type": "string", "maxLength": 50 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "reviewedAt": { "type": "string", "format": "date-time" },
+        "reviewedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "groupId", "userId", "name", "email", "inviteCode", "status", "createdAt"]
+    },
     "GroupMember": {
       "title": "GroupMember",
-      "description": "Registered member directory record in a financial group (managed centrally by administrators)",
+      "description": "Member directory record in a financial group, optionally linked to an authenticated member account",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 128 },
         "userId": { "type": "string", "maxLength": 128 },
+        "linkedUserId": { "type": "string", "maxLength": 128 },
+        "joinedViaInvite": { "type": "boolean" },
         "groupId": { "type": "string", "maxLength": 128 },
         "name": { "type": "string", "maxLength": 120 },
         "email": { "type": "string", "maxLength": 120 },
@@ -82,7 +124,8 @@
         "id": { "type": "string", "maxLength": 128 },
         "groupId": { "type": "string", "maxLength": 128 },
         "title": { "type": "string", "maxLength": 120 },
-        "category": { "type": "string", "enum": ["electricity", "water", "rent", "internet", "security", "waste", "groceries", "maintenance", "other"] },
+        "category": { "type": "string", "enum": ["electricity", "water", "rent", "internet", "security", "waste", "groceries", "maintenance", "utilities", "savings", "welfare", "event", "transport", "emergency", "dues", "other"] },
+        "allocationMode": { "type": "string", "enum": ["stove_rate", "equal", "custom"] },
         "month": { "type": "number" },
         "year": { "type": "number" },
         "totalTargetAmount": { "type": "number" },
@@ -130,6 +173,7 @@
         "transactionReference": { "type": "string", "maxLength": 100 },
         "idempotencyKey": { "type": "string", "maxLength": 128 },
         "collectorId": { "type": "string", "maxLength": 128 },
+        "submittedByMemberId": { "type": "string", "maxLength": 128 },
         "verificationStatus": { "type": "string", "enum": ["submitted", "pending_verification", "verified", "rejected", "disputed", "reversed"] },
         "rejectionReason": { "type": "string", "maxLength": 300 },
         "verifiedAt": { "type": "string", "format": "date-time" },
@@ -141,6 +185,7 @@
         "disputedBy": { "type": "string", "maxLength": 128 },
         "disputeReason": { "type": "string", "maxLength": 300 },
         "receiptImageUrl": { "type": "string", "maxLength": 800000 },
+        "receiptStoragePath": { "type": "string", "maxLength": 400 },
         "receiptEvidenceUrl": { "type": "string", "maxLength": 800000 },
         "receiptNote": { "type": "string", "maxLength": 500 },
         "createdAt": { "type": "string", "format": "date-time" }
@@ -196,13 +241,15 @@
         "id": { "type": "string", "maxLength": 128 },
         "groupId": { "type": "string", "maxLength": 128 },
         "name": { "type": "string", "maxLength": 120 },
-        "category": { "type": "string", "enum": ["electricity", "water", "rent", "internet", "security", "waste", "groceries", "maintenance", "other"] },
+        "category": { "type": "string", "enum": ["electricity", "water", "rent", "internet", "security", "waste", "groceries", "maintenance", "utilities", "savings", "welfare", "event", "transport", "emergency", "dues", "other"] },
         "amount": { "type": "number" },
         "date": { "type": "string", "format": "date-time" },
         "description": { "type": "string", "maxLength": 500 },
         "responsiblePersonId": { "type": "string", "maxLength": 128 },
         "receiptNumber": { "type": "string", "maxLength": 100 },
         "receiptEvidenceUrl": { "type": "string", "maxLength": 800000 },
+        "receiptImageUrl": { "type": "string", "maxLength": 800000 },
+        "receiptStoragePath": { "type": "string", "maxLength": 400 },
         "paymentReference": { "type": "string", "maxLength": 100 },
         "status": { "type": "string", "enum": ["approved", "pending_approval", "rejected"] },
         "approvedBy": { "type": "string", "maxLength": 128 },
@@ -297,13 +344,21 @@
       "schema": { "$ref": "#/entities/User" },
       "description": "Authenticated administrator accounts"
     },
+    "/groupInvites/{inviteCode}": {
+      "schema": { "$ref": "#/entities/GroupInvite" },
+      "description": "Publicly resolvable invite code index without member PII"
+    },
     "/groups/{groupId}": {
       "schema": { "$ref": "#/entities/Group" },
       "description": "Shared financial groups and communities"
     },
+    "/groups/{groupId}/joinRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/JoinRequest" },
+      "description": "Member requests awaiting group admin approval"
+    },
     "/groups/{groupId}/members/{memberId}": {
       "schema": { "$ref": "#/entities/GroupMember" },
-      "description": "Enrolled member directory records with stove classification"
+      "description": "Enrolled member directory records"
     },
     "/groups/{groupId}/contributions/{contributionId}": {
       "schema": { "$ref": "#/entities/Contribution" },

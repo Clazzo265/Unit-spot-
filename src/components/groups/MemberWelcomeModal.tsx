@@ -1,6 +1,11 @@
 import React, { useState } from 'react';
 import { User, Group, StoveType } from '../../types';
-import { RATES, STOVE_TYPE_LABELS } from '../../utils/financialConfig';
+import {
+  RATES,
+  STOVE_TYPE_LABELS,
+  buildInviteUrl,
+  isAccommodationGroup,
+} from '../../utils/financialConfig';
 import { formatMWK } from '../../utils/financialCalculations';
 import { useToast } from '../../context/ToastContext';
 import { Modal } from '../ui/Modal';
@@ -12,6 +17,7 @@ import {
   Phone,
   Home,
   Share2,
+  MessageCircle,
 } from 'lucide-react';
 
 interface MemberWelcomeModalProps {
@@ -35,27 +41,29 @@ export const MemberWelcomeModal: React.FC<MemberWelcomeModalProps> = ({
 
   if (!isOpen || !member || !group) return null;
 
-  const appUrl = window.location.origin;
-  const inviteLink = `${appUrl}/#group=${group.id}&code=${group.joinCode}`;
-  const stoveLine = stoveType
-    ? `• Stove Tier: ${STOVE_TYPE_LABELS[stoveType]} (${formatMWK(RATES[stoveType])})\n`
-    : '';
+  const isAccommodation = isAccommodationGroup(group);
+  const inviteLink = buildInviteUrl(group.joinCode);
+  const stoveLine =
+    isAccommodation && stoveType
+      ? `• Stove Tier: ${STOVE_TYPE_LABELS[stoveType]} (${formatMWK(RATES[stoveType])})\n`
+      : '';
 
   const welcomeMessage =
-    `Welcome to ${group.name} on UnitSpot!\n\n` +
+    `Welcome to ${group.name} on UNIT SPOT!\n\n` +
     `Hello ${member.name},\n\n` +
-    `You have been registered in the financial directory for ${group.name}.\n` +
-    (member.roomNumber ? `• Unit/Room: ${member.roomNumber}\n` : '') +
+    `You have been registered in the group ledger for ${group.name}.\n` +
+    (member.roomNumber ? `• Tag / Unit: ${member.roomNumber}\n` : '') +
     stoveLine +
-    `• Group Code: ${group.joinCode}\n\n` +
-    `All contribution assignments, verified payment receipts, and balance statements will be delivered directly to your registered email (${member.email}).\n\n` +
-    `Group Hub Link: ${inviteLink}\n\n` +
-    `Thank you for keeping our shared accommodation transparent and accountable.`;
+    `• Invite Code: ${group.joinCode}\n\n` +
+    `Join or view your balance & send payment proofs here:\n${inviteLink}\n\n` +
+    `Thank you for keeping our shared finances transparent and accountable.`;
+
+  const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(welcomeMessage)}`;
 
   const handleCopyLink = () => {
     navigator.clipboard.writeText(inviteLink);
     setCopiedLink(true);
-    showToast('Group link copied to clipboard');
+    showToast('Invite link copied to clipboard');
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
@@ -68,7 +76,7 @@ export const MemberWelcomeModal: React.FC<MemberWelcomeModalProps> = ({
 
   const handleSendEmail = () => {
     const subject = encodeURIComponent(
-      `Welcome to ${group.name} on UnitSpot — Member Directory Confirmation`
+      `Welcome to ${group.name} on UNIT SPOT — Group Invite`
     );
     const body = encodeURIComponent(welcomeMessage);
     window.location.href = `mailto:${member.email}?subject=${subject}&body=${body}`;
@@ -79,7 +87,7 @@ export const MemberWelcomeModal: React.FC<MemberWelcomeModalProps> = ({
       isOpen={isOpen}
       onClose={onClose}
       title="Member Enrolled — Directory Confirmation"
-      subtitle={`Ready to share welcome details with ${member.name}`}
+      subtitle={`Ready to share invite details with ${member.name}`}
       maxWidthClass="max-w-lg"
     >
       <div className="space-y-5">
@@ -95,7 +103,7 @@ export const MemberWelcomeModal: React.FC<MemberWelcomeModalProps> = ({
               <span className="text-xs text-slate-500 dark:text-slate-400 capitalize">
                 · {member.role.replace('_', ' ')}
               </span>
-              {stoveType && (
+              {isAccommodation && stoveType && (
                 <span className="text-xs text-amber-700 dark:text-[#E5B93C] font-semibold tabular-nums">
                   · {STOVE_TYPE_LABELS[stoveType]} ({formatMWK(RATES[stoveType])})
                 </span>
@@ -144,7 +152,7 @@ export const MemberWelcomeModal: React.FC<MemberWelcomeModalProps> = ({
 
         <div className="space-y-1.5">
           <label className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-            Group Reference Link
+            Group Invite Link
           </label>
           <div className="flex items-center gap-2">
             <input
@@ -169,13 +177,23 @@ export const MemberWelcomeModal: React.FC<MemberWelcomeModalProps> = ({
         </div>
 
         <div className="pt-2 flex flex-col sm:flex-row items-center gap-2.5">
+          <a
+            href={whatsappUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full sm:flex-1 min-h-[44px] py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors shadow-xs cursor-pointer"
+          >
+            <MessageCircle className="w-4 h-4" />
+            <span>Share on WhatsApp</span>
+          </a>
+
           <button
             type="button"
             onClick={handleCopyMessage}
-            className="w-full sm:flex-1 min-h-[44px] py-2.5 px-4 bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors shadow-xs cursor-pointer"
+            className="w-full sm:w-auto min-h-[44px] py-2.5 px-4 bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
           >
-            <Share2 className="w-4 h-4 text-[#E5B93C] dark:text-white" />
-            <span>{copiedMessage ? 'Copied to Clipboard' : 'Copy WhatsApp / SMS Notice'}</span>
+            <Share2 className="w-3.5 h-3.5 text-[#E5B93C] dark:text-white" />
+            <span>{copiedMessage ? 'Copied' : 'Copy Notice'}</span>
           </button>
 
           <button
@@ -184,7 +202,7 @@ export const MemberWelcomeModal: React.FC<MemberWelcomeModalProps> = ({
             className="w-full sm:w-auto min-h-[44px] py-2.5 px-4 bg-white dark:bg-[#131D33] hover:bg-slate-50 dark:hover:bg-[#1A2744] border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
           >
             <Mail className="w-3.5 h-3.5" />
-            <span>Open Email Client</span>
+            <span>Email</span>
           </button>
         </div>
       </div>

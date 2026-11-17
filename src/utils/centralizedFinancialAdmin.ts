@@ -1,6 +1,7 @@
 import {
   MemberRecord,
   Group,
+  GroupMember,
   Contribution,
   ContributionAssignment,
   Payment,
@@ -9,9 +10,12 @@ import {
   CommunicationType,
   EmailCommunication,
   AdministratorRole,
+  Administrator,
 } from '../types';
 import { formatMWK, calculateVerifiedPaidForAssignment } from './financialCalculations';
 import { toSafeIntMWK } from './financialConfig';
+
+export type EffectiveGroupRole = 'super_admin' | 'admin' | 'treasurer' | 'member';
 
 /**
  * Validates email format with standard regex
@@ -49,6 +53,82 @@ export function generateMemberReferenceId(_groupId: string, membersInGroupCount:
   const year = new Date().getFullYear();
   const sequence = String(membersInGroupCount + 1).padStart(3, '0');
   return `MEM-${year}-${sequence}`;
+}
+
+/**
+ * Resolve a user's effective role inside a specific group.
+ * Prevents global admin assumption when a user is an ordinary member of someone else's group.
+ */
+export function getEffectiveGroupRole(
+  user: Pick<Administrator, 'id' | 'email' | 'role'> | null | undefined,
+  group: Pick<Group, 'id' | 'adminId' | 'treasurerId'> | null | undefined,
+  groupMembers: GroupMember[] = []
+): EffectiveGroupRole {
+  if (!user) return 'member';
+  if (user.role === 'super_admin') return 'super_admin';
+  if (!group) return user.role === 'group_admin' ? 'admin' : 'member';
+
+  if (group.adminId === user.id) return 'admin';
+  if (group.treasurerId === user.id) return 'treasurer';
+
+  const normalizedEmail = (user.email || '').trim().toLowerCase();
+  const membership = groupMembers.find(
+    (m) =>
+      m.groupId === group.id &&
+      m.status !== 'removed' &&
+      m.status !== 'departed' &&
+      (m.userId === user.id ||
+        m.linkedUserId === user.id ||
+        m.id === user.id ||
+        (normalizedEmail && (m.email || '').trim().toLowerCase() === normalizedEmail))
+  );
+
+  if (membership?.roleInGroup === 'admin') return 'admin';
+  if (membership?.roleInGroup === 'treasurer') return 'treasurer';
+  return 'member';
+}
+
+export function canManageGroupRole(role: EffectiveGroupRole | AdministratorRole | undefined): boolean {
+  return role === 'super_admin' || role === 'admin' || role === 'group_admin';
+}
+
+export function canVerifyPaymentsRole(role: EffectiveGroupRole | AdministratorRole | undefined): boolean {
+  return role === 'super_admin' || role === 'admin' || role === 'group_admin' || role === 'treasurer';
+}
+
+/**
+ * Safely resolve the matching active GroupMember record for an authenticated user in a group.
+ * Guards against claiming a record already linked to a different Firebase Auth UID.
+ */
+export function resolveMemberForUser(
+  uid: string | undefined,
+  email: string | undefined,
+  groupId: string | undefined,
+  groupMembers: GroupMember[]
+): GroupMember | null {
+  if (!uid || !groupId) return null;
+  const scoped = groupMembers.filter(
+    (m) => m.groupId === groupId && m.status !== 'removed' && m.status !== 'departed'
+  );
+
+  // 1. Direct UID match
+  const direct = scoped.find(
+    (m) => m.linkedUserId === uid || m.userId === uid || m.id === uid
+  );
+  if (direct) return direct;
+
+  // 2. Active unlinked email match (when admin pre-registered member by email)
+  const normalizedEmail = (email || '').trim().toLowerCase();
+  if (!normalizedEmail) return null;
+
+  const emailMatch = scoped.find((m) => {
+    if ((m.email || '').trim().toLowerCase() !== normalizedEmail) return false;
+    // Do not hijack a record already explicitly linked to another real UID
+    if (m.linkedUserId && m.linkedUserId !== uid) return false;
+    return true;
+  });
+
+  return emailMatch || null;
 }
 
 /**
@@ -258,7 +338,7 @@ export function buildPersonalizedCommunication(
   // General announcement (Broadcast to all active members)
   const subject = customSubject || `Group Announcement — ${group.name}`;
   const snippet =
-    `${customMessage.trim() || 'Notice from the administrator regarding shared accommodation.'}\n\n` +
+    `${customMessage.trim() || `Notice from the administrator regarding ${group.name}.`}\n\n` +
     `— Administrator, ${group.name}`;
 
   return {

@@ -11,8 +11,9 @@ import {
   resolveMemberInfo,
   STOVE_TYPE_LABELS,
   isValidStoveType,
+  isAccommodationGroup,
 } from '../../utils/financialConfig';
-import { canUserVerifyPayments } from '../../utils/centralizedFinancialAdmin';
+import { canVerifyPaymentsRole } from '../../utils/centralizedFinancialAdmin';
 import {
   Clock,
   CheckCircle2,
@@ -50,7 +51,7 @@ export const MainDashboardView: React.FC<{
     groupMembers,
     users,
     auditLogs,
-    currentUser,
+    effectiveRole,
     integrityReport,
     approveCommitmentExtension,
   } = useApp();
@@ -63,10 +64,10 @@ export const MainDashboardView: React.FC<{
             <Building2 className="w-7 h-7 text-[#E5B93C]" />
           </div>
           <h2 className="text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight">
-            Welcome to UnitSpot
+            Welcome to UNIT SPOT
           </h2>
           <p className="text-sm text-slate-600 dark:text-slate-400 mt-2 leading-relaxed max-w-lg mx-auto">
-            Your financial accountability workspace is ready. Create your first shared accommodation or group fund to begin tracking contributions in Malawi Kwacha (MWK).
+            Shared money. Clear records. No confusion. Create a new group or join with an invite code to track contributions and expenses in Malawi Kwacha (MWK).
           </p>
 
           <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
@@ -75,10 +76,10 @@ export const MainDashboardView: React.FC<{
                 Step 1
               </div>
               <div className="text-xs font-bold text-slate-900 dark:text-white mt-0.5">
-                Create a Circle
+                Create or Join
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                Name your hostel, flat, or community fund.
+                Start a house, family, chilimba, church, or trip group.
               </p>
             </div>
             <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#11192C] border border-slate-200/80 dark:border-slate-800">
@@ -86,10 +87,10 @@ export const MainDashboardView: React.FC<{
                 Step 2
               </div>
               <div className="text-xs font-bold text-slate-900 dark:text-white mt-0.5">
-                Enroll Members
+                Invite Members
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                Assign electric or non-electric stove tiers.
+                Share the group link or code on WhatsApp.
               </p>
             </div>
             <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#11192C] border border-slate-200/80 dark:border-slate-800">
@@ -153,11 +154,22 @@ export const MainDashboardView: React.FC<{
       : 0;
 
   const activeCommitments = groupCommitments.filter((c) => c.currentOutstandingAmount > 0);
-  const canManage = canUserVerifyPayments(currentUser?.role);
+  const canManage = canVerifyPaymentsRole(effectiveRole);
+  const showStoveInfo = isAccommodationGroup(currentGroup);
+  const usesStoveBilling =
+    showStoveInfo &&
+    groupContributions.some(
+      (c) => c.allocationMode === 'stove_rate' || (!c.allocationMode && c.category === 'electricity')
+    );
 
-  const membersNeedingStoveReview = activeGroupMembers.filter(
-    (m) => !isValidStoveType(m.stoveType)
-  );
+  const membersNeedingStoveReview = usesStoveBilling
+    ? activeGroupMembers.filter((m) => !isValidStoveType(m.stoveType))
+    : [];
+
+  const pendingProofsCount = groupPayments.filter(
+    (p) =>
+      p.verificationStatus === 'pending_verification' || p.verificationStatus === 'submitted'
+  ).length;
 
   // Guided onboarding checklist for groups still being set up
   const hasMembers = activeGroupMembers.length > 0;
@@ -178,10 +190,10 @@ export const MainDashboardView: React.FC<{
     {
       id: 'members',
       done: hasMembers,
-      label: 'Enroll Members',
+      label: 'Invite Members',
       detail: hasMembers
         ? `${activeGroupMembers.length} active member(s)`
-        : 'Add residents & stove tiers',
+        : 'Add or share invite link',
       actionLabel: hasMembers ? 'Directory' : 'Add Member',
       onClick: () => onNavigateTab('groups'),
       icon: Users,
@@ -189,10 +201,10 @@ export const MainDashboardView: React.FC<{
     {
       id: 'contribution',
       done: hasContributions,
-      label: 'Assign Contribution',
+      label: 'Set Contributions',
       detail: hasContributions
         ? `${groupContributions.length} cycle(s) created`
-        : 'Create your first bill cycle',
+        : 'Set first member shares',
       actionLabel: hasContributions ? 'New Cycle' : 'Create Now',
       onClick: onOpenCreateContribution,
       icon: FileSpreadsheet,
@@ -200,10 +212,10 @@ export const MainDashboardView: React.FC<{
     {
       id: 'payment',
       done: hasPayments,
-      label: 'Record Payment',
+      label: 'Check Payments',
       detail: hasPayments
         ? `${groupPayments.length} payment(s) logged`
-        : 'Log cash or mobile receipt',
+        : 'Verify receipts or cash',
       actionLabel: 'Record',
       onClick: () =>
         hasContributions ? onOpenRecordPayment() : onOpenCreateContribution(),
@@ -215,6 +227,30 @@ export const MainDashboardView: React.FC<{
 
   return (
     <div className="space-y-6">
+      {/* Pending Member Payment Proofs Queue Alert */}
+      {canManage && pendingProofsCount > 0 && (
+        <div className="bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800/70 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-950 dark:text-amber-100">
+          <div className="flex items-start gap-2.5">
+            <Clock className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">
+                {pendingProofsCount} member payment proof{pendingProofsCount === 1 ? '' : 's'} waiting for admin check
+              </p>
+              <p className="text-amber-800 dark:text-amber-300 mt-0.5">
+                Verify Airtel Money, TNM Mpamba, or bank receipts to update verified totals.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigateTab('payments')}
+            className="min-h-[40px] px-4 py-2 rounded-xl bg-amber-900 hover:bg-amber-950 text-white font-bold cursor-pointer whitespace-nowrap"
+          >
+            Check Payments ({pendingProofsCount})
+          </button>
+        </div>
+      )}
+
       {/* Integrity / Classification Alert Banner */}
       {(membersNeedingStoveReview.length > 0 ||
         (integrityReport &&
@@ -225,7 +261,7 @@ export const MainDashboardView: React.FC<{
             <div>
               <p className="font-bold">
                 {membersNeedingStoveReview.length > 0
-                  ? `${membersNeedingStoveReview.length} active member(s) require stove classification (MK 10,000 Electric vs MK 5,000 Non-Electric).`
+                  ? `${membersNeedingStoveReview.length} active member(s) in this electricity stove-rate group need a stove tier (MK 10,000 Electric vs MK 5,000 Non-Electric).`
                   : `Data Integrity Scan: ${integrityReport?.repairedCount || 0} normalized, ${integrityReport?.flaggedCount || 0} flagged for review.`}
               </p>
               <p className="text-amber-800 dark:text-amber-300 mt-0.5">
@@ -240,7 +276,7 @@ export const MainDashboardView: React.FC<{
                 onClick={() => onNavigateTab('groups')}
                 className="min-h-[40px] px-3.5 py-2 rounded-xl bg-amber-900 hover:bg-amber-950 text-white font-semibold cursor-pointer whitespace-nowrap"
               >
-                Classify in Directory
+                Set Stove Tiers
               </button>
             )}
             <button
@@ -550,7 +586,7 @@ export const MainDashboardView: React.FC<{
                       <div className="min-w-0">
                         <div className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2 flex-wrap">
                           <span className="truncate">{member?.name || 'Registered Member'}</span>
-                          {member && isValidStoveType(member.stoveType) && (
+                          {showStoveInfo && member && isValidStoveType(member.stoveType) && (
                             <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
                               · {STOVE_TYPE_LABELS[member.stoveType]}
                             </span>

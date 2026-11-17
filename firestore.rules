@@ -53,7 +53,9 @@ service cloud.firestore {
           exists(/databases/$(database)/documents/groups/$(groupId)) && (
             get(/databases/$(database)/documents/groups/$(groupId)).data.adminId == request.auth.uid ||
             ('treasurerId' in get(/databases/$(database)/documents/groups/$(groupId)).data &&
-              get(/databases/$(database)/documents/groups/$(groupId)).data.treasurerId == request.auth.uid)
+              get(/databases/$(database)/documents/groups/$(groupId)).data.treasurerId == request.auth.uid) ||
+            ('memberUids' in get(/databases/$(database)/documents/groups/$(groupId)).data &&
+              request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberUids)
           )
         ) ||
         exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid))
@@ -79,14 +81,31 @@ service cloud.firestore {
       );
     }
 
+    function isValidGroupCategory(cat) {
+      return cat in [
+        'house', 'hostel', 'family', 'friends', 'savings_group',
+        'church', 'business', 'club', 'community', 'project',
+        'workplace', 'event', 'other'
+      ];
+    }
+
+    function isValidExpenseCategory(cat) {
+      return cat in [
+        'electricity', 'water', 'rent', 'internet', 'security',
+        'waste', 'groceries', 'maintenance', 'utilities', 'savings',
+        'welfare', 'event', 'transport', 'emergency', 'dues', 'other'
+      ];
+    }
+
     // Schema validators aligned with firebase-blueprint.json
     function isValidUser(data) {
       return data.keys().hasAll(['id', 'name', 'email', 'role', 'createdAt']) &&
-             data.keys().hasOnly(['id', 'name', 'email', 'phone', 'role', 'roomNumber', 'avatarUrl', 'createdAt']) &&
+             data.keys().hasOnly(['id', 'name', 'email', 'phone', 'role', 'roomNumber', 'avatarUrl', 'preferredLanguage', 'createdAt']) &&
              isValidId(data.id) &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
              data.email is string && data.email.size() > 0 && data.email.size() <= 120 &&
              data.role in ['super_admin', 'group_admin', 'treasurer', 'member'] &&
+             (!('preferredLanguage' in data) || data.preferredLanguage in ['en', 'ny']) &&
              data.createdAt is string && data.createdAt.size() <= 64;
     }
 
@@ -94,11 +113,37 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'name', 'category', 'adminId', 'defaultCurrency', 'joinCode', 'createdAt']) &&
              isValidId(data.id) &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
-             data.category in ['house', 'hostel', 'workplace', 'community', 'church', 'project'] &&
+             isValidGroupCategory(data.category) &&
              isValidId(data.adminId) &&
              data.defaultCurrency is string && data.defaultCurrency.size() > 0 && data.defaultCurrency.size() <= 10 &&
              data.joinCode is string && data.joinCode.size() > 0 && data.joinCode.size() <= 50 &&
+             (!('joinPolicy' in data) || data.joinPolicy in ['code_auto', 'admin_approval']) &&
+             (!('inviteRevoked' in data) || data.inviteRevoked is bool) &&
+             (!('memberUids' in data) || (data.memberUids is list && data.memberUids.size() <= 200)) &&
              (!('status' in data) || data.status in ['active', 'archived']);
+    }
+
+    function isValidGroupInvite(data) {
+      return data.keys().hasAll(['inviteCode', 'groupId', 'groupName', 'category', 'joinPolicy', 'revoked', 'adminId', 'createdAt']) &&
+             data.keys().hasOnly(['inviteCode', 'groupId', 'groupName', 'category', 'joinPolicy', 'revoked', 'adminId', 'createdAt', 'updatedAt']) &&
+             isValidId(data.inviteCode) &&
+             isValidId(data.groupId) &&
+             data.groupName is string && data.groupName.size() > 0 && data.groupName.size() <= 120 &&
+             isValidGroupCategory(data.category) &&
+             data.joinPolicy in ['code_auto', 'admin_approval'] &&
+             data.revoked is bool &&
+             isValidId(data.adminId);
+    }
+
+    function isValidJoinRequest(data) {
+      return data.keys().hasAll(['id', 'groupId', 'userId', 'name', 'email', 'inviteCode', 'status', 'createdAt']) &&
+             isValidId(data.id) &&
+             isValidId(data.groupId) &&
+             isValidId(data.userId) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
+             data.email is string && data.email.size() <= 120 &&
+             data.inviteCode is string && data.inviteCode.size() <= 50 &&
+             data.status in ['pending', 'approved', 'rejected'];
     }
 
     function isValidGroupMember(data) {
@@ -118,7 +163,8 @@ service cloud.firestore {
              isValidId(data.id) &&
              isValidId(data.groupId) &&
              data.title is string && data.title.size() > 0 && data.title.size() <= 120 &&
-             data.category in ['electricity', 'water', 'rent', 'internet', 'security', 'waste', 'groceries', 'maintenance', 'other'] &&
+             isValidExpenseCategory(data.category) &&
+             (!('allocationMode' in data) || data.allocationMode in ['stove_rate', 'equal', 'custom']) &&
              data.totalTargetAmount is number && data.totalTargetAmount >= 0 &&
              data.status in ['active', 'closed'];
     }
@@ -172,7 +218,7 @@ service cloud.firestore {
              isValidId(data.groupId) &&
              data.amount is number && data.amount > 0 &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
-             data.category in ['electricity', 'water', 'rent', 'internet', 'security', 'waste', 'groceries', 'maintenance', 'other'] &&
+             isValidExpenseCategory(data.category) &&
              data.status in ['approved', 'pending_approval', 'rejected'];
     }
 
@@ -211,7 +257,24 @@ service cloud.firestore {
       allow list, write: if false;
     }
 
-    // Authenticated administrator profiles (PII protected)
+    // Non-PII invite code lookup (allows signed-in users to inspect a group invite by exact code)
+    match /groupInvites/{inviteCode} {
+      allow get: if isValidId(inviteCode) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.adminId == request.auth.uid;
+      allow create: if isValidId(inviteCode) && isVerifiedAccount() &&
+                    isValidGroupInvite(incoming()) &&
+                    incoming().inviteCode == inviteCode &&
+                    (isSuperAdmin() || incoming().adminId == request.auth.uid);
+      allow update: if isValidId(inviteCode) && isVerifiedAccount() &&
+                    isValidGroupInvite(incoming()) &&
+                    incoming().inviteCode == existing().inviteCode &&
+                    incoming().groupId == existing().groupId &&
+                    (isSuperAdmin() || existing().adminId == request.auth.uid);
+      allow delete: if isValidId(inviteCode) && isVerifiedAccount() &&
+                    (isSuperAdmin() || existing().adminId == request.auth.uid);
+    }
+
+    // Authenticated user profiles (PII protected)
     match /users/{userId} {
       allow get: if isValidId(userId) && isSignedIn() && (isOwner(userId) || isSuperAdmin());
       allow list: if isSuperAdminToken();
@@ -243,25 +306,83 @@ service cloud.firestore {
       allow list: if isSignedIn() && (
         isSuperAdminToken() ||
         resource.data.adminId == request.auth.uid ||
-        ('treasurerId' in resource.data && resource.data.treasurerId == request.auth.uid)
+        ('treasurerId' in resource.data && resource.data.treasurerId == request.auth.uid) ||
+        ('memberUids' in resource.data && request.auth.uid in resource.data.memberUids)
       );
       allow create: if isValidId(groupId) && isVerifiedAccount() && isValidGroup(incoming()) &&
                     incoming().id == groupId &&
                     (isSuperAdmin() || incoming().adminId == request.auth.uid);
-      allow update: if isValidId(groupId) && isGroupManager(groupId) && isValidGroup(incoming()) &&
+      allow update: if isValidId(groupId) && isValidGroup(incoming()) &&
                     (!('id' in existing()) || incoming().id == existing().id) &&
-                    (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt);
+                    (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) && (
+                      isGroupManager(groupId) ||
+                      (
+                        isVerifiedAccount() &&
+                        (!('joinPolicy' in existing()) || existing().joinPolicy == 'code_auto') &&
+                        (!('inviteRevoked' in existing()) || existing().inviteRevoked != true) &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids', 'memberCount', 'updatedAt']) &&
+                        ('memberUids' in incoming()) &&
+                        request.auth.uid in incoming().memberUids
+                      )
+                    );
       allow delete: if isValidId(groupId) && (isSuperAdmin() || (isVerifiedAccount() && existing().adminId == request.auth.uid));
+
+      match /joinRequests/{requestId} {
+        allow get: if isValidId(groupId) && isValidId(requestId) && (
+          isGroupManager(groupId) || (isSignedIn() && requestId == request.auth.uid)
+        );
+        allow list: if isValidId(groupId) && (
+          isGroupManager(groupId) || (isSignedIn() && resource.data.userId == request.auth.uid)
+        );
+        allow create: if isValidId(groupId) && isValidId(requestId) && isVerifiedAccount() &&
+                      isValidJoinRequest(incoming()) &&
+                      requestId == request.auth.uid &&
+                      incoming().id == request.auth.uid &&
+                      incoming().userId == request.auth.uid &&
+                      incoming().groupId == groupId &&
+                      incoming().status == 'pending';
+        allow update: if isValidId(groupId) && isValidId(requestId) && isGroupManager(groupId) &&
+                      isValidJoinRequest(incoming()) &&
+                      incoming().groupId == groupId &&
+                      incoming().userId == existing().userId;
+        allow delete: if isValidId(groupId) && isValidId(requestId) && (
+          isGroupManager(groupId) || (isSignedIn() && requestId == request.auth.uid)
+        );
+      }
 
       match /members/{memberId} {
         allow get: if isValidId(groupId) && isValidId(memberId) && isGroupMember(groupId);
         allow list: if isValidId(groupId) && isGroupMember(groupId);
-        allow create: if isValidId(groupId) && isValidId(memberId) && isGroupManager(groupId) &&
-                      isValidGroupMember(incoming()) && incoming().groupId == groupId;
-        allow update: if isValidId(groupId) && isValidId(memberId) && isGroupManager(groupId) &&
-                      isValidGroupMember(incoming()) &&
+        allow create: if isValidId(groupId) && isValidId(memberId) && isValidGroupMember(incoming()) &&
+                      incoming().groupId == groupId && (
+                        isGroupManager(groupId) ||
+                        (
+                          isVerifiedAccount() &&
+                          memberId == request.auth.uid &&
+                          incoming().userId == request.auth.uid &&
+                          incoming().roleInGroup == 'member' &&
+                          incoming().status == 'active' &&
+                          exists(/databases/$(database)/documents/groups/$(groupId)) &&
+                          (!('joinPolicy' in get(/databases/$(database)/documents/groups/$(groupId)).data) ||
+                            get(/databases/$(database)/documents/groups/$(groupId)).data.joinPolicy == 'code_auto') &&
+                          (!('inviteRevoked' in get(/databases/$(database)/documents/groups/$(groupId)).data) ||
+                            get(/databases/$(database)/documents/groups/$(groupId)).data.inviteRevoked != true)
+                        )
+                      );
+        allow update: if isValidId(groupId) && isValidId(memberId) && isValidGroupMember(incoming()) &&
                       (!('id' in existing()) || incoming().id == existing().id) &&
-                      (!('groupId' in existing()) || incoming().groupId == existing().groupId);
+                      (!('groupId' in existing()) || incoming().groupId == existing().groupId) && (
+                        isGroupManager(groupId) ||
+                        (
+                          isVerifiedAccount() &&
+                          !('linkedUserId' in existing()) &&
+                          existing().email == request.auth.token.email &&
+                          incoming().linkedUserId == request.auth.uid &&
+                          incoming().roleInGroup == existing().roleInGroup &&
+                          incoming().status == existing().status &&
+                          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['linkedUserId', 'userId', 'joinedViaInvite', 'updatedAt'])
+                        )
+                      );
         allow delete: if isValidId(groupId) && isValidId(memberId) && isSuperAdmin();
       }
 
@@ -282,19 +403,35 @@ service cloud.firestore {
         allow list: if isValidId(groupId) && isGroupMember(groupId);
         allow create: if isValidId(groupId) && isValidId(assignmentId) && isGroupManager(groupId) &&
                       isValidAssignment(incoming()) && incoming().groupId == groupId;
-        allow update: if isValidId(groupId) && isValidId(assignmentId) && isGroupManager(groupId) &&
-                      isValidAssignment(incoming()) &&
+        allow update: if isValidId(groupId) && isValidId(assignmentId) && isValidAssignment(incoming()) &&
                       (!('id' in existing()) || incoming().id == existing().id) &&
-                      (!('groupId' in existing()) || incoming().groupId == existing().groupId);
+                      (!('groupId' in existing()) || incoming().groupId == existing().groupId) && (
+                        isGroupManager(groupId) ||
+                        (
+                          isGroupMember(groupId) &&
+                          isVerifiedAccount() &&
+                          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
+                          incoming().status == 'pending_verification'
+                        )
+                      );
         allow delete: if isValidId(groupId) && isValidId(assignmentId) && isGroupManager(groupId);
       }
 
       match /payments/{paymentId} {
         allow get: if isValidId(groupId) && isValidId(paymentId) && isGroupMember(groupId);
         allow list: if isValidId(groupId) && isGroupMember(groupId);
-        allow create: if isValidId(groupId) && isValidId(paymentId) && isGroupManager(groupId) &&
-                      isValidPayment(incoming()) && incoming().groupId == groupId &&
-                      incoming().collectorId == request.auth.uid;
+        allow create: if isValidId(groupId) && isValidId(paymentId) && isValidPayment(incoming()) &&
+                      incoming().groupId == groupId &&
+                      incoming().collectorId == request.auth.uid && (
+                        isGroupManager(groupId) ||
+                        (
+                          isGroupMember(groupId) &&
+                          isVerifiedAccount() &&
+                          incoming().verificationStatus == 'pending_verification' &&
+                          !('verifiedAt' in incoming()) &&
+                          !('verifiedBy' in incoming())
+                        )
+                      );
         allow update: if isValidId(groupId) && isValidId(paymentId) && isGroupManager(groupId) &&
                       isValidPayment(incoming()) &&
                       (!('id' in existing()) || incoming().id == existing().id) &&

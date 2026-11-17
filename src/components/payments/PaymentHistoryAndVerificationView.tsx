@@ -5,8 +5,8 @@ import { Payment, PaymentVerificationStatus } from '../../types';
 import { formatMWK } from '../../utils/financialCalculations';
 import { resolveMemberInfo } from '../../utils/financialConfig';
 import {
-  canUserVerifyPayments,
-  canUserReversePayments,
+  canManageGroupRole,
+  canVerifyPaymentsRole,
 } from '../../utils/centralizedFinancialAdmin';
 import { Modal } from '../ui/Modal';
 import { EmptyState } from '../ui/EmptyState';
@@ -35,6 +35,8 @@ export const PaymentHistoryAndVerificationView: React.FC<{
     reversePayment,
     disputePayment,
     currentUser,
+    effectiveRole,
+    currentMemberRecord,
   } = useApp();
   const { showToast } = useToast();
 
@@ -50,18 +52,55 @@ export const PaymentHistoryAndVerificationView: React.FC<{
   const [actionReason, setActionReason] = useState<string>('');
   const [modalError, setModalError] = useState<string>('');
 
-  const canVerify = canUserVerifyPayments(currentUser?.role);
-  const canReverse = canUserReversePayments(currentUser?.role);
+  const canVerify = canVerifyPaymentsRole(effectiveRole);
+  const canReverse = canManageGroupRole(effectiveRole);
 
-  const groupPayments = useMemo(
-    () => (currentGroup ? payments.filter((p) => p.groupId === currentGroup.id) : payments),
-    [payments, currentGroup]
+  const groupPayments = useMemo(() => {
+    const scoped = currentGroup
+      ? payments.filter((p) => p.groupId === currentGroup.id)
+      : payments;
+    if (canVerify) return scoped;
+    return scoped.filter((p) => {
+      if (
+        currentMemberRecord &&
+        (p.memberId === currentMemberRecord.id ||
+          p.memberId === currentMemberRecord.userId ||
+          p.submittedByMemberId === currentMemberRecord.id)
+      ) {
+        return true;
+      }
+      if (currentUser && (p.memberId === currentUser.id || p.collectorId === currentUser.id)) {
+        return true;
+      }
+      return false;
+    });
+  }, [payments, currentGroup, canVerify, currentMemberRecord, currentUser]);
+
+  const pendingProofsCount = useMemo(
+    () =>
+      groupPayments.filter(
+        (p) =>
+          p.verificationStatus === 'pending_verification' ||
+          p.verificationStatus === 'submitted'
+      ).length,
+    [groupPayments]
   );
 
   const filteredPayments = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return groupPayments.filter((p) => {
-      if (filterStatus !== 'all' && p.verificationStatus !== filterStatus) return false;
+      if (filterStatus !== 'all') {
+        if (filterStatus === 'pending_verification') {
+          if (
+            p.verificationStatus !== 'pending_verification' &&
+            p.verificationStatus !== 'submitted'
+          ) {
+            return false;
+          }
+        } else if (p.verificationStatus !== filterStatus) {
+          return false;
+        }
+      }
       if (filterMethod !== 'all' && p.paymentMethod !== filterMethod) return false;
 
       if (fromDate) {
@@ -170,7 +209,7 @@ export const PaymentHistoryAndVerificationView: React.FC<{
       return;
     }
     showToast('Dispute Logged', {
-      message: `Transaction ${paymentId} flagged in Dispute Center.`,
+      message: `Transaction ${paymentId} flagged in Questions & Issues.`,
       variant: 'info',
     });
     closeModal();
@@ -190,7 +229,7 @@ export const PaymentHistoryAndVerificationView: React.FC<{
         return (
           <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-700 dark:text-amber-400 whitespace-nowrap">
             <Clock className="w-3.5 h-3.5 shrink-0" />
-            {status === 'submitted' ? 'Submitted' : 'Pending Review'}
+            Waiting Admin Check
           </span>
         );
       case 'disputed':
@@ -223,10 +262,12 @@ export const PaymentHistoryAndVerificationView: React.FC<{
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
-            Payments &amp; Verification
+            {canVerify ? 'Check Payments & Ledger' : 'My Payments & Proofs'}
           </h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-            Immutable audit ledger of every transaction, reference, reversal, and receipt proof
+            {canVerify
+              ? 'Verify member payment proofs, check mobile money references, and keep every MWK transaction clear'
+              : 'Your submitted payment proofs, verified receipts, and remaining balance updates'}
           </p>
         </div>
 
@@ -236,9 +277,33 @@ export const PaymentHistoryAndVerificationView: React.FC<{
           className="min-h-[44px] inline-flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer whitespace-nowrap"
         >
           <CreditCard className="w-4 h-4 text-[#E5B93C] dark:text-white" />
-          <span>Record New Payment</span>
+          <span>{canVerify ? 'Record New Payment' : 'Submit Payment Proof'}</span>
         </button>
       </div>
+
+      {/* Pending Verification Queue Banner */}
+      {canVerify && pendingProofsCount > 0 && filterStatus !== 'pending_verification' && (
+        <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div className="flex items-start gap-2.5 text-amber-950 dark:text-amber-100">
+            <Clock className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">
+                {pendingProofsCount} member payment proof{pendingProofsCount === 1 ? '' : 's'} waiting for your check
+              </p>
+              <p className="text-amber-800 dark:text-amber-300 mt-0.5">
+                Pending proofs do not reduce balances until you verify and approve them.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFilterStatus('pending_verification')}
+            className="min-h-[40px] px-4 py-2 rounded-xl bg-amber-900 hover:bg-amber-950 text-white font-bold cursor-pointer whitespace-nowrap"
+          >
+            Review Waiting ({pendingProofsCount})
+          </button>
+        </div>
+      )}
 
       {/* Search & Filters */}
       <div className="bg-white dark:bg-[#0D1424] rounded-2xl border border-slate-200 dark:border-slate-800 p-4 space-y-3 shadow-xs">

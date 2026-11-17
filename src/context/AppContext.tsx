@@ -20,6 +20,11 @@ import {
   StoveType,
   ActionResult,
   IntegrityReport,
+  ContributionAllocationMode,
+  GroupInvite,
+  JoinRequest,
+  GroupJoinPolicy,
+  CloudSyncStatus,
 } from '../types';
 import {
   INITIAL_USERS,
@@ -53,6 +58,9 @@ import {
   sanitizeForFirestore,
   normalizeGroupMemberForSync,
   mergeGroupMembersWithFallback,
+  isAccommodationGroup,
+  generateJoinCode,
+  extractInviteCodeFromUrl,
 } from '../utils/financialConfig';
 import {
   validateEmailAddress,
@@ -60,10 +68,11 @@ import {
   generateMemberReferenceId,
   filterTargetAudience,
   createEmailCommunicationDispatch,
-  canUserManageGroup,
-  canUserVerifyPayments,
-  canUserReversePayments,
-  canUserApproveExpenses,
+  getEffectiveGroupRole,
+  canManageGroupRole,
+  canVerifyPaymentsRole,
+  resolveMemberForUser,
+  EffectiveGroupRole,
 } from '../utils/centralizedFinancialAdmin';
 import {
   stripDataUrlsFromPayments,
@@ -71,6 +80,7 @@ import {
   persistStorageWithFallback,
   mergeItemsById,
 } from '../utils/storageUtils';
+import { AppLanguage, getLocaleStrings, LocaleDictionary } from '../utils/i18n';
 import {
   auth,
   db,
@@ -78,6 +88,11 @@ import {
   handleFirestoreError,
   OperationType,
   testFirestoreConnection,
+  signUpWithEmail,
+  signInWithEmail,
+  resetPassword,
+  resendVerificationEmail,
+  reloadCurrentUser,
 } from '../firebase/config';
 import {
   signInWithPopup,
@@ -89,9 +104,13 @@ import {
   collection,
   doc,
   setDoc,
+  getDoc,
+  updateDoc,
   onSnapshot,
   query,
   where,
+  arrayUnion,
+  increment,
 } from 'firebase/firestore';
 
 export type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
@@ -103,9 +122,26 @@ interface AppContextType {
   authError: string | null;
   clearAuthError: () => void;
   firebaseAuthUser: FirebaseUser | null;
-  signInWithGoogle: () => Promise<void>;
+  isEmailVerified: boolean;
+  signInWithGoogle: () => Promise<boolean>;
+  signInWithEmailAccount: (email: string, password: string) => Promise<boolean>;
+  signUpWithEmailAccount: (name: string, email: string, password: string) => Promise<boolean>;
+  sendPasswordReset: (email: string) => Promise<boolean>;
+  resendVerification: () => Promise<boolean>;
+  refreshAuthVerification: () => Promise<boolean>;
   signOut: () => Promise<void>;
   isFirebaseReady: boolean;
+
+  language: AppLanguage;
+  setLanguage: (lang: AppLanguage) => void;
+  strings: LocaleDictionary;
+
+  syncStatus: CloudSyncStatus;
+  pendingInviteCode: string | null;
+  setPendingInviteCode: (code: string | null) => void;
+
+  effectiveRole: EffectiveGroupRole;
+  currentMemberRecord: GroupMember | null;
 
   actionError: string | null;
   clearActionError: () => void;
@@ -122,6 +158,7 @@ interface AppContextType {
   commitmentEvents: CommitmentEvent[];
   expenses: Expense[];
   disputes: Dispute[];
+  joinRequests: JoinRequest[];
   notifications: AppNotification[];
   auditLogs: AuditLog[];
   communications: EmailCommunication[];
@@ -137,12 +174,14 @@ interface AppContextType {
     transactionReference?: string;
     idempotencyKey?: string;
     receiptImageUrl?: string;
+    receiptStoragePath?: string;
     receiptNote?: string;
   }) => {
     success: boolean;
     paymentId: string;
     newOutstanding: number;
     overpaid?: number;
+    verificationStatus?: Payment['verificationStatus'];
     error?: string;
   };
 
@@ -168,16 +207,23 @@ interface AppContextType {
     memberAssignments: { memberId: string; amount: number; notes?: string }[]
   ) => ActionResult;
 
-  // Group Lifecycle
+  // Group & Invite Lifecycle
   createGroup: (
     group: Omit<Group, 'id' | 'createdAt' | 'memberCount' | 'adminId' | 'treasurerId' | 'joinCode'>
   ) => string;
   updateGroup: (
     groupId: string,
-    updates: Partial<Pick<Group, 'name' | 'description' | 'category' | 'paymentRules'>>
+    updates: Partial<Pick<Group, 'name' | 'description' | 'category' | 'paymentRules' | 'joinPolicy'>>
   ) => ActionResult;
   archiveGroup: (groupId: string, reason: string) => ActionResult;
   transferGroupOwnership: (groupId: string, newAdminMemberId: string, reason: string) => ActionResult;
+  lookupInviteByCode: (code: string) => Promise<ActionResult<GroupInvite>>;
+  joinGroupByCode: (code: string) => Promise<ActionResult<{ groupId: string; groupName: string; status: 'joined' | 'pending_approval' }>>;
+  approveJoinRequest: (groupId: string, requestId: string, approved: boolean) => Promise<ActionResult>;
+  regenerateGroupInvite: (
+    groupId: string,
+    options?: { revoke?: boolean; regenerate?: boolean; joinPolicy?: GroupJoinPolicy }
+  ) => Promise<ActionResult>;
 
   // Member Lifecycle
   addMemberToGroup: (params: {
@@ -185,7 +231,7 @@ interface AppContextType {
     email: string;
     phone: string;
     role: 'admin' | 'treasurer' | 'member';
-    stoveType: StoveType;
+    stoveType?: StoveType;
     roomNumber?: string;
     notes?: string;
   }) => { success: boolean; user?: User; member?: GroupMember; error?: string };
@@ -194,7 +240,7 @@ interface AppContextType {
     name: string;
     email: string;
     phone?: string;
-    stoveType: StoveType;
+    stoveType?: StoveType;
     roomNumber?: string;
     notes?: string;
     role?: 'admin' | 'treasurer' | 'member';
@@ -235,7 +281,8 @@ interface AppContextType {
   clearAllData: () => void;
 }
 
-const STORAGE_KEY = 'klarency_app_state_firebase_v3';
+const STORAGE_KEY = 'unitspot_app_state_v4';
+const LANG_STORAGE_KEY = 'unitspot_lang';
 const PRE_REPAIR_SNAPSHOT_KEY = 'klarency_pre_repair_snapshot_v1';
 const SUPER_ADMIN_EMAIL = 'cchilongo88@gmail.com';
 
@@ -257,6 +304,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [authStatus, setAuthStatus] = useState<AuthStatus>('loading');
   const [authError, setAuthError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>(() =>
+    typeof navigator !== 'undefined' && !navigator.onLine ? 'offline_queued' : 'synced'
+  );
+  const [language, setLanguageState] = useState<AppLanguage>(() => {
+    const saved = localStorage.getItem(LANG_STORAGE_KEY);
+    return saved === 'ny' ? 'ny' : 'en';
+  });
+  const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return extractInviteCodeFromUrl(window.location.href);
+  });
+
+  const setLanguage = useCallback((lang: AppLanguage) => {
+    setLanguageState(lang);
+    try {
+      localStorage.setItem(LANG_STORAGE_KEY, lang);
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
+  const strings = getLocaleStrings(language);
 
   const [users, setUsers] = useState<User[]>(() =>
     safeParseStorage<User[]>(`${STORAGE_KEY}_users`, INITIAL_USERS)
@@ -303,6 +372,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [disputes, setDisputes] = useState<Dispute[]>(() =>
     safeParseStorage<Dispute[]>(`${STORAGE_KEY}_disputes`, INITIAL_DISPUTES)
   );
+  const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>(() =>
     safeParseStorage<AppNotification[]>(`${STORAGE_KEY}_notifications`, INITIAL_NOTIFICATIONS)
   );
@@ -324,13 +394,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     Boolean(localStorage.getItem(PRE_REPAIR_SNAPSHOT_KEY))
   );
 
+  const isEmailVerified = firebaseAuthUser ? Boolean(firebaseAuthUser.emailVerified) : true;
+
+  const effectiveRole: EffectiveGroupRole = getEffectiveGroupRole(
+    currentUser,
+    currentGroup,
+    groupMembers
+  );
+
+  const currentMemberRecord: GroupMember | null = resolveMemberForUser(
+    currentUser?.id,
+    currentUser?.email,
+    currentGroup?.id,
+    groupMembers
+  );
+
+  const getRoleForGroupId = useCallback(
+    (targetGroupId?: string): EffectiveGroupRole => {
+      if (!currentUser) return 'member';
+      if (currentUser.role === 'super_admin') return 'super_admin';
+      const target =
+        groups.find((g) => g.id === targetGroupId) || currentGroup || undefined;
+      return getEffectiveGroupRole(currentUser, target, groupMembers);
+    },
+    [currentUser, groups, currentGroup, groupMembers]
+  );
+
+  // Track browser online/offline changes honestly
+  useEffect(() => {
+    const onOnline = () => setSyncStatus('synced');
+    const onOffline = () => setSyncStatus('offline_queued');
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
   const setCurrentUser = useCallback((user: User) => {
     setCurrentUserState(user);
     setUsers((prev) => {
       const exists = prev.some((u) => u.id === user.id);
       return exists ? prev.map((u) => (u.id === user.id ? user : u)) : [user, ...prev];
     });
-    if (firebaseAuthUser) {
+    if (firebaseAuthUser && firebaseAuthUser.emailVerified) {
       setDoc(
         doc(db, 'users', user.id),
         sanitizeForFirestore(user as unknown as Record<string, unknown>),
@@ -349,9 +457,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       op: OperationType = OperationType.WRITE
     ): Promise<void> => {
       if (!firebaseAuthUser) return;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setSyncStatus('offline_queued');
+        return;
+      }
+      setSyncStatus('syncing');
       try {
         await setDoc(doc(db, path, docId), sanitizeForFirestore(data), { merge: true });
+        setSyncStatus('synced');
       } catch (err) {
+        setSyncStatus(typeof navigator !== 'undefined' && !navigator.onLine ? 'offline_queued' : 'error');
         try {
           handleFirestoreError(err, op, `${path}/${docId}`);
         } catch (wrapped) {
@@ -376,6 +491,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!hasAnyRecords) return;
 
     const scanResult = auditAndRepairFinancialData({
+      groups,
       groupMembers,
       contributions,
       assignments,
@@ -434,11 +550,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const mappedUser: User = {
           id: fbUser.uid,
-          name: fbUser.displayName || fbUser.email?.split('@')[0] || 'Administrator',
+          name: fbUser.displayName || fbUser.email?.split('@')[0] || 'User',
           email: fbUser.email || '',
           phone: fbUser.phoneNumber || undefined,
           role: isVerifiedSuperAdmin ? 'super_admin' : 'group_admin',
           avatarUrl: fbUser.photoURL || undefined,
+          preferredLanguage: language,
           createdAt: new Date().toISOString(),
         };
 
@@ -451,14 +568,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             : [mappedUser, ...prev];
         });
 
-        try {
-          await setDoc(
-            doc(db, 'users', fbUser.uid),
-            sanitizeForFirestore(mappedUser as unknown as Record<string, unknown>),
-            { merge: true }
-          );
-        } catch (err) {
-          console.warn('Could not sync user to Firestore:', err);
+        if (fbUser.emailVerified) {
+          try {
+            await setDoc(
+              doc(db, 'users', fbUser.uid),
+              sanitizeForFirestore(mappedUser as unknown as Record<string, unknown>),
+              { merge: true }
+            );
+          } catch (err) {
+            console.warn('Could not sync user to Firestore:', err);
+          }
         }
       } else {
         setCurrentUserState(null);
@@ -467,9 +586,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [language]);
 
-  // Listen to authenticated admin's groups
+  // Listen to authenticated user's groups (admin, treasurer, and memberUids)
   useEffect(() => {
     if (!firebaseAuthUser) return;
 
@@ -477,28 +596,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       firebaseAuthUser.email?.toLowerCase() === SUPER_ADMIN_EMAIL &&
       firebaseAuthUser.emailVerified === true;
 
-    const groupsQuery = isVerifiedSuperAdmin
-      ? collection(db, 'groups')
-      : query(collection(db, 'groups'), where('adminId', '==', firebaseAuthUser.uid));
+    const handleGroupSnapshot = (remoteGroups: Group[]) => {
+      if (remoteGroups.length === 0) return;
+      setGroups((prev) => mergeItemsById(prev, remoteGroups));
+      setCurrentGroup((prev) => {
+        if (!prev) return remoteGroups.find((g) => g.status !== 'archived') || remoteGroups[0] || null;
+        const refreshed = remoteGroups.find((g) => g.id === prev.id);
+        return refreshed || prev;
+      });
+      setSyncStatus('synced');
+    };
 
-    const unsubGroups = onSnapshot(
-      groupsQuery,
-      (snapshot) => {
-        if (!snapshot.empty) {
-          const remoteGroups: Group[] = [];
-          snapshot.forEach((docSnap) => {
-            remoteGroups.push(docSnap.data() as Group);
-          });
-          setGroups((prev) => mergeItemsById(prev, remoteGroups));
-          setCurrentGroup((prev) => {
-            if (!prev) return remoteGroups.find((g) => g.status !== 'archived') || remoteGroups[0] || null;
-            const refreshed = remoteGroups.find((g) => g.id === prev.id);
-            return refreshed || prev;
-          });
-        }
-      },
-      (err) => console.warn('Groups snapshot error:', err)
-    );
+    const unsubs: (() => void)[] = [];
+
+    if (isVerifiedSuperAdmin) {
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'groups'),
+          (snapshot) => {
+            const remoteGroups: Group[] = [];
+            snapshot.forEach((docSnap) => remoteGroups.push(docSnap.data() as Group));
+            handleGroupSnapshot(remoteGroups);
+          },
+          (err) => console.warn('Groups snapshot error:', err)
+        )
+      );
+    } else {
+      const adminQuery = query(collection(db, 'groups'), where('adminId', '==', firebaseAuthUser.uid));
+      const memberQuery = query(
+        collection(db, 'groups'),
+        where('memberUids', 'array-contains', firebaseAuthUser.uid)
+      );
+
+      [adminQuery, memberQuery].forEach((q) => {
+        unsubs.push(
+          onSnapshot(
+            q,
+            (snapshot) => {
+              const remoteGroups: Group[] = [];
+              snapshot.forEach((docSnap) => remoteGroups.push(docSnap.data() as Group));
+              handleGroupSnapshot(remoteGroups);
+            },
+            (err) => console.warn('Groups query error:', err)
+          )
+        );
+      });
+    }
 
     const notificationsRef = collection(db, `users/${firebaseAuthUser.uid}/notifications`);
     const unsubNotifications = onSnapshot(
@@ -522,7 +665,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     return () => {
-      unsubGroups();
+      unsubs.forEach((u) => u());
       unsubNotifications();
     };
   }, [firebaseAuthUser]);
@@ -583,6 +726,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         {
           path: `groups/${groupId}/disputes`,
           onData: (docs) => setDisputes((prev) => mergeById(prev, docs as Dispute[])),
+        },
+        {
+          path: `groups/${groupId}/joinRequests`,
+          onData: (docs) => setJoinRequests((prev) => mergeById(prev, docs as JoinRequest[])),
         },
         {
           path: `groups/${groupId}/auditLogs`,
@@ -676,13 +823,111 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     notificationConfig,
   ]);
 
-  const signInWithGoogle = async () => {
+  const signInWithGoogle = async (): Promise<boolean> => {
     setAuthError(null);
     try {
       await signInWithPopup(auth, googleProvider);
+      return true;
     } catch (error) {
       console.error('Google Sign In failed:', error);
       setAuthError('Google Sign-In could not be completed. Please allow popups and try again.');
+      return false;
+    }
+  };
+
+  const signInWithEmailAccount = async (email: string, password: string): Promise<boolean> => {
+    setAuthError(null);
+    if (!validateEmailAddress(email)) {
+      setAuthError('Please enter a valid email address.');
+      return false;
+    }
+    if (!password) {
+      setAuthError('Please enter your password.');
+      return false;
+    }
+    try {
+      await signInWithEmail(email, password);
+      return true;
+    } catch (err: any) {
+      const code = err?.code || '';
+      if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+        setAuthError('Incorrect email or password. Please check your details or reset your password.');
+      } else if (code === 'auth/operation-not-allowed') {
+        setAuthError('Email & password sign-in is not yet enabled in Firebase Authentication. You can use Continue with Google in the meantime.');
+      } else {
+        setAuthError(err?.message || 'Sign in failed. Please try again.');
+      }
+      return false;
+    }
+  };
+
+  const signUpWithEmailAccount = async (name: string, email: string, password: string): Promise<boolean> => {
+    setAuthError(null);
+    if (!name.trim() || name.trim().length < 2) {
+      setAuthError('Please enter your full name.');
+      return false;
+    }
+    if (!validateEmailAddress(email)) {
+      setAuthError('Please enter a valid email address.');
+      return false;
+    }
+    if (password.length < 6) {
+      setAuthError('Password must be at least 6 characters long.');
+      return false;
+    }
+    try {
+      await signUpWithEmail(name, email, password);
+      return true;
+    } catch (err: any) {
+      const code = err?.code || '';
+      if (code === 'auth/email-already-in-use') {
+        setAuthError('An account with this email already exists. Please sign in instead.');
+      } else if (code === 'auth/operation-not-allowed') {
+        setAuthError('Email & password registration is not yet enabled in Firebase Authentication. You can use Continue with Google in the meantime.');
+      } else {
+        setAuthError(err?.message || 'Could not create your account. Please try again.');
+      }
+      return false;
+    }
+  };
+
+  const sendPasswordReset = async (email: string): Promise<boolean> => {
+    setAuthError(null);
+    if (!validateEmailAddress(email)) {
+      setAuthError('Enter your account email address first.');
+      return false;
+    }
+    try {
+      await resetPassword(email);
+      return true;
+    } catch (err: any) {
+      setAuthError(err?.message || 'Could not send reset email. Please check the address.');
+      return false;
+    }
+  };
+
+  const resendVerification = async (): Promise<boolean> => {
+    setAuthError(null);
+    try {
+      await resendVerificationEmail();
+      return true;
+    } catch (err: any) {
+      setAuthError(err?.message || 'Could not resend verification email right now.');
+      return false;
+    }
+  };
+
+  const refreshAuthVerification = async (): Promise<boolean> => {
+    setAuthError(null);
+    try {
+      const reloaded = await reloadCurrentUser();
+      if (reloaded) {
+        setFirebaseAuthUser({ ...reloaded } as FirebaseUser);
+        return Boolean(reloaded.emailVerified);
+      }
+      return false;
+    } catch {
+      return false;
     }
   };
 
@@ -837,26 +1082,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [syncToFirestore]
   );
 
-  // Record payment with strict MWK integer validation, channel reference check, and idempotency
+  // Record payment (Admins/Treasurers verify immediately; Active Members submit pending_verification for their own assignment)
   const recordPayment: AppContextType['recordPayment'] = (params) => {
     if (!currentUser) {
       return { success: false, paymentId: '', newOutstanding: 0, error: 'Authentication required.' };
-    }
-    if (!canUserVerifyPayments(currentUser.role)) {
-      addAuditLog('UNAUTHORIZED_PAYMENT_ATTEMPT', `User ${currentUser.email} blocked from recording payment`, {
-        securityEvent: true,
-      });
-      return {
-        success: false,
-        paymentId: '',
-        newOutstanding: 0,
-        error: 'Only administrators or treasurers may record payments.',
-      };
     }
 
     const targetAssignment = assignments.find((a) => a.id === params.assignmentId);
     if (!targetAssignment) {
       return { success: false, paymentId: '', newOutstanding: 0, error: 'Selected obligation not found.' };
+    }
+
+    const roleInTargetGroup = getRoleForGroupId(targetAssignment.groupId);
+    const isVerifier = canVerifyPaymentsRole(roleInTargetGroup);
+    const memberSelf = resolveMemberForUser(
+      currentUser.id,
+      currentUser.email,
+      targetAssignment.groupId,
+      groupMembers
+    );
+
+    if (!isVerifier) {
+      const ownsAssignment =
+        memberSelf &&
+        (targetAssignment.memberId === memberSelf.id ||
+          targetAssignment.memberId === memberSelf.userId ||
+          targetAssignment.memberId === currentUser.id);
+      if (!ownsAssignment || memberSelf?.status !== 'active') {
+        addAuditLog('UNAUTHORIZED_PAYMENT_ATTEMPT', `User ${currentUser.email} blocked from submitting payment for another member`, {
+          securityEvent: true,
+          groupId: targetAssignment.groupId,
+        });
+        return {
+          success: false,
+          paymentId: '',
+          newOutstanding: 0,
+          error: 'You can only submit payment proof for your own active contribution.',
+        };
+      }
     }
 
     const parsedAmount = parseMWKInput(params.amount);
@@ -925,10 +1188,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const paymentId = `TX-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
     const nowIso = new Date().toISOString();
 
-    const isDirectAutoVerified =
-      currentUser.role === 'treasurer' ||
-      currentUser.role === 'group_admin' ||
-      currentUser.role === 'super_admin';
+    const isDirectAutoVerified = isVerifier;
 
     const newPayment: Payment = {
       id: paymentId,
@@ -942,8 +1202,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       transactionReference: effectiveReference,
       idempotencyKey: params.idempotencyKey,
       receiptImageUrl: params.receiptImageUrl,
+      receiptStoragePath: params.receiptStoragePath,
       receiptEvidenceUrl: params.receiptImageUrl,
       collectorId: currentUser.id,
+      submittedByMemberId: !isVerifier ? memberSelf?.id : undefined,
       verificationStatus: isDirectAutoVerified ? 'verified' : 'pending_verification',
       verifiedAt: isDirectAutoVerified ? nowIso : undefined,
       verifiedBy: isDirectAutoVerified ? currentUser.id : undefined,
@@ -960,6 +1222,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       newPayment as unknown as Record<string, unknown>,
       OperationType.CREATE
     );
+
+    if (!isDirectAutoVerified) {
+      const targetGroup = groups.find((g) => g.id === targetAssignment.groupId);
+      if (targetGroup?.adminId) {
+        addNotification(
+          targetGroup.adminId,
+          'Payment Proof Waiting Check',
+          `${currentUser.name} submitted payment proof of MK ${parsedAmount.value.toLocaleString('en-US')} (Ref: ${effectiveReference}).`,
+          'payment'
+        );
+      }
+    }
 
     const { newOutstanding, overpaid, newStatus } = recomputeAssignmentAndCommitments(
       targetAssignment,
@@ -1084,16 +1358,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
-    return { success: true, paymentId, newOutstanding, overpaid };
+    return {
+      success: true,
+      paymentId,
+      newOutstanding,
+      overpaid,
+      verificationStatus: newPayment.verificationStatus,
+    };
   };
 
   // Verify or Reject payment
   const verifyPayment = (paymentId: string, approved: boolean, reason?: string): ActionResult => {
-    if (!currentUser || !canUserVerifyPayments(currentUser.role)) {
-      return { success: false, error: 'Insufficient permissions to verify payments.' };
-    }
     const payment = payments.find((p) => p.id === paymentId);
     if (!payment) return { success: false, error: 'Payment not found.' };
+    if (!currentUser || !canVerifyPaymentsRole(getRoleForGroupId(payment.groupId))) {
+      return { success: false, error: 'Insufficient permissions to verify payments.' };
+    }
     if (payment.verificationStatus === 'reversed') {
       return { success: false, error: 'Reversed payments cannot be re-verified.' };
     }
@@ -1151,7 +1431,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Non-destructive Payment Reversal (preserves original record & recalculates balances)
   const reversePayment = (paymentId: string, reason: string): ActionResult => {
-    if (!currentUser || !canUserReversePayments(currentUser.role)) {
+    const payment = payments.find((p) => p.id === paymentId);
+    if (!payment) return { success: false, error: 'Payment record not found.' };
+    if (!currentUser || !canManageGroupRole(getRoleForGroupId(payment.groupId))) {
       addAuditLog('UNAUTHORIZED_REVERSAL_ATTEMPT', `User ${currentUser?.email || 'unknown'} blocked from reversing payment ${paymentId}`, {
         securityEvent: true,
       });
@@ -1162,8 +1444,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, error: 'Please provide a clear reversal reason (at least 5 characters).' };
     }
 
-    const payment = payments.find((p) => p.id === paymentId);
-    if (!payment) return { success: false, error: 'Payment record not found.' };
     if (payment.verificationStatus === 'reversed') {
       return { success: false, error: 'This payment has already been reversed.' };
     }
@@ -1209,7 +1489,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Flag Payment as Disputed
   const disputePayment = (paymentId: string, reason: string): ActionResult => {
-    if (!currentUser || !canUserVerifyPayments(currentUser.role)) {
+    const payment = payments.find((p) => p.id === paymentId);
+    if (!payment) return { success: false, error: 'Payment not found.' };
+    if (!currentUser || !canVerifyPaymentsRole(getRoleForGroupId(payment.groupId))) {
       return { success: false, error: 'Insufficient permissions to dispute payment.' };
     }
     const cleanReason = reason.trim();
@@ -1217,8 +1499,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, error: 'Please enter a reason for flagging this payment as disputed.' };
     }
 
-    const payment = payments.find((p) => p.id === paymentId);
-    if (!payment) return { success: false, error: 'Payment not found.' };
     if (payment.verificationStatus === 'reversed') {
       return { success: false, error: 'Reversed payments cannot be disputed.' };
     }
@@ -1410,9 +1690,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Approve extension
   const approveCommitmentExtension = (commitmentId: string, approved: boolean) => {
-    if (!currentUser || !canUserVerifyPayments(currentUser.role)) return;
     const commitment = commitments.find((c) => c.id === commitmentId);
-    if (!commitment) return;
+    if (!commitment || !currentUser || !canVerifyPaymentsRole(getRoleForGroupId(commitment.groupId))) return;
 
     const lastEvent = [...commitmentEvents]
       .reverse()
@@ -1478,7 +1757,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const recordExpense = (
     expenseData: Omit<Expense, 'id' | 'createdAt' | 'status'>
   ): ActionResult => {
-    if (!currentUser || !canUserVerifyPayments(currentUser.role)) {
+    const roleInGrp = getRoleForGroupId(expenseData.groupId);
+    if (!currentUser || !canVerifyPaymentsRole(roleInGrp)) {
       return { success: false, error: 'Insufficient permissions to record expenses.' };
     }
     const parsedAmount = parseMWKInput(expenseData.amount);
@@ -1486,7 +1766,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, error: parsedAmount.error };
     }
 
-    const isAutoApproved = canUserApproveExpenses(currentUser.role);
+    const isAutoApproved = canManageGroupRole(roleInGrp);
     const nowIso = new Date().toISOString();
 
     const newExpense: Expense = {
@@ -1518,11 +1798,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Approve expense
   const approveExpense = (expenseId: string, approved: boolean): ActionResult => {
-    if (!currentUser || !canUserApproveExpenses(currentUser.role)) {
-      return { success: false, error: 'Only administrators may approve or decline expenses.' };
-    }
     const targetExpense = expenses.find((e) => e.id === expenseId);
     if (!targetExpense) return { success: false, error: 'Expense not found.' };
+    if (!currentUser || !canManageGroupRole(getRoleForGroupId(targetExpense.groupId))) {
+      return { success: false, error: 'Only administrators may approve or decline expenses.' };
+    }
 
     const nowIso = new Date().toISOString();
     const nextStatus = approved ? ('approved' as const) : ('rejected' as const);
@@ -1559,19 +1839,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { success: true };
   };
 
-  // Create Contribution with rate snapshots & mandatory stoveType verification
+  // Create Contribution (respects explicit allocationMode: stove_rate only requires stove classification)
   const createContribution = (
     contributionData: Omit<Contribution, 'id' | 'createdAt'>,
     memberAssignments: { memberId: string; amount: number; notes?: string }[]
   ): ActionResult => {
-    if (!currentUser || !canUserManageGroup(currentUser.role)) {
+    if (!currentUser || !canManageGroupRole(getRoleForGroupId(contributionData.groupId))) {
       return { success: false, error: 'Only administrators may create contribution obligations.' };
     }
     if (memberAssignments.length === 0) {
       return { success: false, error: 'At least one active member assignment is required.' };
     }
 
-    // Validate every assigned member has a valid stove classification
+    const targetGroup = groups.find((g) => g.id === contributionData.groupId) || currentGroup;
+    const allocationMode: ContributionAllocationMode =
+      contributionData.allocationMode ||
+      (isAccommodationGroup(targetGroup) && contributionData.category === 'electricity'
+        ? 'stove_rate'
+        : 'equal');
+
     for (const ma of memberAssignments) {
       const member = groupMembers.find(
         (m) => m.id === ma.memberId || m.userId === ma.memberId
@@ -1579,10 +1865,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!member) {
         return { success: false, error: `Member ${ma.memberId} was not found in this group.` };
       }
-      if (!isValidStoveType(member.stoveType)) {
+      if (allocationMode === 'stove_rate' && !isValidStoveType(member.stoveType)) {
         return {
           success: false,
-          error: `Member "${member.name}" does not have a stove classification (Electric or Non-Electric). Please classify them in Groups & Directory before assigning contributions.`,
+          error: `Member "${member.name}" needs a stove type (Electric or Non-Electric) before using electricity stove-rate billing.`,
         };
       }
       const parsed = parseMWKInput(ma.amount);
@@ -1603,9 +1889,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const newContribution: Contribution = {
       ...contributionData,
+      allocationMode,
       totalTargetAmount: totalTargetSafe || toSafeIntMWK(contributionData.totalTargetAmount),
       id: contributionId,
-      rateConfigVersion: RATE_CONFIG_VERSION,
+      rateConfigVersion: allocationMode === 'stove_rate' ? RATE_CONFIG_VERSION : undefined,
       createdAt: nowIso,
     };
 
@@ -1613,16 +1900,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const member = groupMembers.find(
         (m) => m.id === ma.memberId || m.userId === ma.memberId
       )!;
-      const stoveType = member.stoveType!;
+      const stoveType =
+        allocationMode === 'stove_rate' && isValidStoveType(member.stoveType)
+          ? member.stoveType
+          : undefined;
       return {
         id: `asg_${Date.now()}_${idx}`,
         contributionId,
         groupId: contributionData.groupId,
         memberId: ma.memberId,
         assignedAmount: toSafeIntMWK(ma.amount),
-        applicableRate: RATES[stoveType],
+        applicableRate: stoveType ? RATES[stoveType] : undefined,
         stoveTypeAtAssignment: stoveType,
-        rateConfigVersion: RATE_CONFIG_VERSION,
+        rateConfigVersion: stoveType ? RATE_CONFIG_VERSION : undefined,
         assignedDate: nowIso,
         deadline: contributionData.deadline,
         notes: ma.notes || '',
@@ -1650,7 +1940,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     addAuditLog(
       'CONTRIBUTION_CREATED',
-      `Created contribution "${contributionData.title}" (Target MK ${newContribution.totalTargetAmount.toLocaleString('en-US')}) for ${memberAssignments.length} members using Rate Config ${RATE_CONFIG_VERSION}.`,
+      `Created contribution "${contributionData.title}" (Target MK ${newContribution.totalTargetAmount.toLocaleString('en-US')}) for ${memberAssignments.length} members (${allocationMode}).`,
       {
         targetEntity: 'contribution',
         targetId: contributionId,
@@ -1661,8 +1951,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     memberAssignments.forEach((ma) => {
       addNotification(
         ma.memberId,
-        'New Contribution Assigned',
-        `You have been assigned MK ${toSafeIntMWK(ma.amount).toLocaleString('en-US')} for "${contributionData.title}". Deadline: ${new Date(contributionData.deadline).toLocaleDateString()}.`,
+        'New Contribution Set',
+        `Your share for "${contributionData.title}" is MK ${toSafeIntMWK(ma.amount).toLocaleString('en-US')}. Due ${new Date(contributionData.deadline).toLocaleDateString()}.`,
         'announcement'
       );
     });
@@ -1670,20 +1960,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { success: true };
   };
 
-  // Create Group
+  // Create Group + non-PII GroupInvite index
   const createGroup: AppContextType['createGroup'] = (groupData) => {
     if (!currentUser) return '';
     const groupId = `grp_${Date.now()}`;
-    const randomCode = `US-${Math.random().toString(36).substring(2, 6).toUpperCase()}-${Math.floor(10 + Math.random() * 89)}`;
+    const randomCode = generateJoinCode('US');
     const nowIso = new Date().toISOString();
+    const joinPolicy: GroupJoinPolicy = groupData.joinPolicy || 'code_auto';
 
     const newGroup: Group = {
       ...groupData,
       id: groupId,
       adminId: currentUser.id,
       treasurerId: currentUser.id,
+      memberUids: [currentUser.id],
       defaultCurrency: 'MWK',
       joinCode: randomCode,
+      joinPolicy,
+      inviteRevoked: false,
       status: 'active',
       createdAt: nowIso,
       updatedAt: nowIso,
@@ -1697,12 +1991,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: currentUser.id,
       groupId,
       userId: currentUser.id,
+      linkedUserId: currentUser.id,
       name: currentUser.name,
       email: currentUser.email,
       phone: currentUser.phone,
       memberRefId: 'MEM-ADMIN-001',
       roleInGroup: 'admin',
-      stoveType: 'electric',
+      stoveType: isAccommodationGroup(newGroup) ? 'electric' : undefined,
       joinedAt: nowIso,
       createdAt: nowIso,
       updatedAt: nowIso,
@@ -1711,21 +2006,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const normalizedAdminMember = normalizeGroupMemberForSync(newMember, users);
     setGroupMembers((prev) => [...prev, normalizedAdminMember]);
 
+    const inviteDoc: GroupInvite = {
+      inviteCode: randomCode,
+      groupId,
+      groupName: newGroup.name,
+      category: newGroup.category,
+      joinPolicy,
+      revoked: false,
+      adminId: currentUser.id,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
     syncToFirestore(
       'groups',
       groupId,
       newGroup as unknown as Record<string, unknown>,
       OperationType.CREATE
-    ).then(() =>
+    ).then(() => {
       syncToFirestore(
         `groups/${groupId}/members`,
         currentUser.id,
         normalizedAdminMember as unknown as Record<string, unknown>,
         OperationType.CREATE
-      )
-    );
+      );
+      syncToFirestore(
+        'groupInvites',
+        randomCode,
+        inviteDoc as unknown as Record<string, unknown>,
+        OperationType.CREATE
+      );
+    });
 
-    addAuditLog('GROUP_CREATED', `Group "${groupData.name}" created with code ${randomCode}`, {
+    addAuditLog('GROUP_CREATED', `Group "${groupData.name}" created with join code ${randomCode}`, {
       targetEntity: 'group',
       targetId: groupId,
       groupId,
@@ -1735,7 +2048,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Update Group settings
   const updateGroup: AppContextType['updateGroup'] = (groupId, updates) => {
-    if (!currentUser || !canUserManageGroup(currentUser.role)) {
+    if (!currentUser || !canManageGroupRole(getRoleForGroupId(groupId))) {
       return { success: false, error: 'Only administrators may edit group details.' };
     }
     const existingGroup = groups.find((g) => g.id === groupId);
@@ -1754,6 +2067,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     syncToFirestore('groups', groupId, nextGroup as unknown as Record<string, unknown>);
+    if (nextGroup.joinCode) {
+      syncToFirestore('groupInvites', nextGroup.joinCode, {
+        inviteCode: nextGroup.joinCode,
+        groupId: nextGroup.id,
+        groupName: nextGroup.name,
+        category: nextGroup.category,
+        joinPolicy: nextGroup.joinPolicy || 'code_auto',
+        revoked: Boolean(nextGroup.inviteRevoked),
+        adminId: nextGroup.adminId,
+        createdAt: nextGroup.createdAt,
+        updatedAt: nowIso,
+      });
+    }
+
     addAuditLog('GROUP_UPDATED', `Updated settings for group "${nextGroup.name}"`, {
       targetEntity: 'group',
       targetId: groupId,
@@ -1766,7 +2093,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Archive Group (non-destructive)
   const archiveGroup: AppContextType['archiveGroup'] = (groupId, reason) => {
-    if (!currentUser || !canUserManageGroup(currentUser.role)) {
+    if (!currentUser || !canManageGroupRole(getRoleForGroupId(groupId))) {
       return { success: false, error: 'Only administrators may archive groups.' };
     }
     const target = groups.find((g) => g.id === groupId);
@@ -1808,7 +2135,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     newAdminMemberId,
     reason
   ) => {
-    if (!currentUser || !canUserManageGroup(currentUser.role)) {
+    if (!currentUser || !canManageGroupRole(getRoleForGroupId(groupId))) {
       return { success: false, error: 'Only administrators may transfer group ownership.' };
     }
     const targetGroup = groups.find((g) => g.id === groupId);
@@ -1825,7 +2152,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const prevAdminId = targetGroup.adminId;
     const nextGroup: Group = {
       ...targetGroup,
-      adminId: candidate.userId,
+      adminId: candidate.linkedUserId || candidate.userId,
       updatedAt: nowIso,
     };
 
@@ -1870,21 +2197,322 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { success: true };
   };
 
-  // Add Member Record (requires explicit stoveType)
+  // Invite Lookup by Code
+  const lookupInviteByCode: AppContextType['lookupInviteByCode'] = async (code) => {
+    const cleanCode = (code || '').trim().toUpperCase();
+    if (!cleanCode || cleanCode.length < 4) {
+      return { success: false, error: 'Enter a valid invite code (for example US-ABCD-12).' };
+    }
+
+    // Check local groups first (supports offline / same-device previews)
+    const localMatch = groups.find(
+      (g) => g.joinCode.toUpperCase() === cleanCode && g.status !== 'archived'
+    );
+    if (localMatch) {
+      if (localMatch.inviteRevoked) {
+        return { success: false, error: 'This invite code has been disabled by the group administrator.' };
+      }
+      return {
+        success: true,
+        data: {
+          inviteCode: localMatch.joinCode,
+          groupId: localMatch.id,
+          groupName: localMatch.name,
+          category: localMatch.category,
+          joinPolicy: localMatch.joinPolicy || 'code_auto',
+          revoked: Boolean(localMatch.inviteRevoked),
+          adminId: localMatch.adminId,
+          createdAt: localMatch.createdAt,
+        },
+      };
+    }
+
+    if (!firebaseAuthUser) {
+      return { success: false, error: 'Please sign in to look up this group invite code.' };
+    }
+
+    try {
+      const snap = await getDoc(doc(db, 'groupInvites', cleanCode));
+      if (!snap.exists()) {
+        return { success: false, error: 'No group found with that invite code. Please check with your group admin.' };
+      }
+      const invite = snap.data() as GroupInvite;
+      if (invite.revoked) {
+        return { success: false, error: 'This invite link is no longer active. Ask your admin for a new code.' };
+      }
+      return { success: true, data: invite };
+    } catch (err) {
+      console.warn('Invite lookup error:', err);
+      return { success: false, error: 'Could not look up that code right now. Check your connection and try again.' };
+    }
+  };
+
+  // Join Group by Code
+  const joinGroupByCode: AppContextType['joinGroupByCode'] = async (code) => {
+    if (!currentUser || !firebaseAuthUser) {
+      return { success: false, error: 'Please sign in first to join a group.' };
+    }
+    if (!firebaseAuthUser.emailVerified) {
+      return { success: false, error: 'Please verify your email address before joining a group.' };
+    }
+
+    const lookup = await lookupInviteByCode(code);
+    if (!lookup.success || !lookup.data) {
+      return { success: false, error: lookup.error || 'Invalid invite code.' };
+    }
+
+    const invite = lookup.data;
+    const nowIso = new Date().toISOString();
+
+    // Check if user is already an active member of this group
+    const alreadyInGroup = groupMembers.find(
+      (m) =>
+        m.groupId === invite.groupId &&
+        m.status === 'active' &&
+        (m.userId === currentUser.id || m.linkedUserId === currentUser.id || m.id === currentUser.id)
+    );
+    if (alreadyInGroup) {
+      const existingGroup = groups.find((g) => g.id === invite.groupId);
+      if (existingGroup) setCurrentGroup(existingGroup);
+      setPendingInviteCode(null);
+      return {
+        success: true,
+        data: { groupId: invite.groupId, groupName: invite.groupName, status: 'joined' },
+      };
+    }
+
+    if (invite.joinPolicy === 'admin_approval') {
+      const reqDoc: JoinRequest = {
+        id: currentUser.id,
+        groupId: invite.groupId,
+        userId: currentUser.id,
+        name: currentUser.name,
+        email: currentUser.email,
+        phone: currentUser.phone || '',
+        inviteCode: invite.inviteCode,
+        status: 'pending',
+        createdAt: nowIso,
+      };
+      setJoinRequests((prev) => [reqDoc, ...prev.filter((r) => r.id !== reqDoc.id)]);
+      await syncToFirestore(
+        `groups/${invite.groupId}/joinRequests`,
+        reqDoc.id,
+        reqDoc as unknown as Record<string, unknown>,
+        OperationType.CREATE
+      );
+      setPendingInviteCode(null);
+      return {
+        success: true,
+        data: { groupId: invite.groupId, groupName: invite.groupName, status: 'pending_approval' },
+      };
+    }
+
+    // Auto-join via code
+    const newMember: GroupMember = {
+      id: currentUser.id,
+      userId: currentUser.id,
+      linkedUserId: currentUser.id,
+      joinedViaInvite: true,
+      groupId: invite.groupId,
+      name: currentUser.name,
+      email: currentUser.email.trim().toLowerCase(),
+      phone: currentUser.phone || '',
+      memberRefId: generateMemberReferenceId(invite.groupId, groupMembers.filter((m) => m.groupId === invite.groupId).length),
+      roleInGroup: 'member',
+      membershipDate: nowIso,
+      joinedAt: nowIso,
+      status: 'active',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    try {
+      await setDoc(
+        doc(db, `groups/${invite.groupId}/members`, currentUser.id),
+        sanitizeForFirestore(newMember as unknown as Record<string, unknown>),
+        { merge: true }
+      );
+      await updateDoc(doc(db, 'groups', invite.groupId), {
+        memberUids: arrayUnion(currentUser.id),
+        memberCount: increment(1),
+        updatedAt: nowIso,
+      });
+
+      const joinedSnap = await getDoc(doc(db, 'groups', invite.groupId));
+      if (joinedSnap.exists()) {
+        const joinedGroup = joinedSnap.data() as Group;
+        setGroups((prev) => mergeItemsById(prev, [joinedGroup]));
+        setCurrentGroup(joinedGroup);
+      }
+    } catch (err) {
+      console.warn('Firestore auto-join failed:', err);
+      return {
+        success: false,
+        error: 'Could not complete group join right now. Check your internet connection or ask your admin.',
+      };
+    }
+
+    setGroupMembers((prev) => [...prev.filter((m) => !(m.groupId === invite.groupId && m.id === newMember.id)), newMember]);
+    addNotification(
+      invite.adminId,
+      'New Member Joined',
+      `${currentUser.name} joined ${invite.groupName} using the group invite code.`,
+      'announcement'
+    );
+    setPendingInviteCode(null);
+
+    return {
+      success: true,
+      data: { groupId: invite.groupId, groupName: invite.groupName, status: 'joined' },
+    };
+  };
+
+  // Approve or Reject Join Request
+  const approveJoinRequest: AppContextType['approveJoinRequest'] = async (
+    groupId,
+    requestId,
+    approved
+  ) => {
+    if (!currentUser || !canManageGroupRole(getRoleForGroupId(groupId))) {
+      return { success: false, error: 'Only group administrators may review join requests.' };
+    }
+    const req = joinRequests.find((r) => r.id === requestId && r.groupId === groupId);
+    if (!req) return { success: false, error: 'Join request not found.' };
+
+    const nowIso = new Date().toISOString();
+    const updatedReq: JoinRequest = {
+      ...req,
+      status: approved ? 'approved' : 'rejected',
+      reviewedAt: nowIso,
+      reviewedBy: currentUser.id,
+    };
+
+    setJoinRequests((prev) => prev.map((r) => (r.id === requestId ? updatedReq : r)));
+    await syncToFirestore(
+      `groups/${groupId}/joinRequests`,
+      requestId,
+      updatedReq as unknown as Record<string, unknown>,
+      OperationType.UPDATE
+    );
+
+    if (approved) {
+      const targetGroup = groups.find((g) => g.id === groupId);
+      const newMember: GroupMember = {
+        id: req.userId,
+        userId: req.userId,
+        linkedUserId: req.userId,
+        joinedViaInvite: true,
+        groupId,
+        name: req.name,
+        email: req.email,
+        phone: req.phone || '',
+        memberRefId: generateMemberReferenceId(groupId, groupMembers.filter((m) => m.groupId === groupId).length),
+        roleInGroup: 'member',
+        membershipDate: nowIso,
+        joinedAt: nowIso,
+        status: 'active',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      setGroupMembers((prev) => [...prev, newMember]);
+      await syncToFirestore(
+        `groups/${groupId}/members`,
+        newMember.id,
+        newMember as unknown as Record<string, unknown>,
+        OperationType.CREATE
+      );
+      if (targetGroup) {
+        const nextUids = Array.from(new Set([...(targetGroup.memberUids || [targetGroup.adminId]), req.userId]));
+        const nextGroup = { ...targetGroup, memberUids: nextUids, memberCount: nextUids.length, updatedAt: nowIso };
+        setGroups((prev) => prev.map((g) => (g.id === groupId ? nextGroup : g)));
+        if (currentGroup?.id === groupId) setCurrentGroup(nextGroup);
+        await syncToFirestore('groups', groupId, nextGroup as unknown as Record<string, unknown>, OperationType.UPDATE);
+      }
+      addNotification(
+        req.userId,
+        'Membership Approved',
+        `You have been approved to join ${targetGroup?.name || 'the group'}.`,
+        'announcement'
+      );
+    }
+
+    return { success: true };
+  };
+
+  // Regenerate, revoke, or update invite policy
+  const regenerateGroupInvite: AppContextType['regenerateGroupInvite'] = async (
+    groupId,
+    options = {}
+  ) => {
+    if (!currentUser || !canManageGroupRole(getRoleForGroupId(groupId))) {
+      return { success: false, error: 'Only group administrators may manage invite links.' };
+    }
+    const targetGroup = groups.find((g) => g.id === groupId);
+    if (!targetGroup) return { success: false, error: 'Group not found.' };
+
+    const nowIso = new Date().toISOString();
+    const oldCode = targetGroup.joinCode;
+    const nextCode = options.regenerate ? generateJoinCode('US') : oldCode;
+    const nextRevoked = typeof options.revoke === 'boolean' ? options.revoke : Boolean(targetGroup.inviteRevoked);
+    const nextPolicy = options.joinPolicy || targetGroup.joinPolicy || 'code_auto';
+
+    const nextGroup: Group = {
+      ...targetGroup,
+      joinCode: nextCode,
+      joinPolicy: nextPolicy,
+      inviteRevoked: options.regenerate ? false : nextRevoked,
+      updatedAt: nowIso,
+    };
+
+    setGroups((prev) => prev.map((g) => (g.id === groupId ? nextGroup : g)));
+    if (currentGroup?.id === groupId) setCurrentGroup(nextGroup);
+
+    await syncToFirestore('groups', groupId, nextGroup as unknown as Record<string, unknown>);
+
+    if (options.regenerate && oldCode !== nextCode) {
+      await syncToFirestore('groupInvites', oldCode, {
+        inviteCode: oldCode,
+        groupId,
+        groupName: nextGroup.name,
+        category: nextGroup.category,
+        joinPolicy: nextPolicy,
+        revoked: true,
+        adminId: nextGroup.adminId,
+        createdAt: nextGroup.createdAt,
+        updatedAt: nowIso,
+      });
+    }
+
+    await syncToFirestore('groupInvites', nextCode, {
+      inviteCode: nextCode,
+      groupId,
+      groupName: nextGroup.name,
+      category: nextGroup.category,
+      joinPolicy: nextPolicy,
+      revoked: Boolean(nextGroup.inviteRevoked),
+      adminId: nextGroup.adminId,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+
+    return { success: true };
+  };
+
+  // Add Member Record (stoveType optional — only needed if an accommodation group uses electricity stove billing)
   const addMemberRecord: AppContextType['addMemberRecord'] = (params) => {
-    if (!currentUser || !canUserManageGroup(currentUser.role)) {
+    if (!currentGroup) return { success: false, error: 'No active group selected.' };
+    if (!currentUser || !canManageGroupRole(getRoleForGroupId(currentGroup.id))) {
       return { success: false, error: 'Only administrators may register new members.' };
     }
-    if (!currentGroup) return { success: false, error: 'No active group selected.' };
 
     if (!validateEmailAddress(params.email)) {
       return { success: false, error: 'Please enter a valid email address (e.g. name@domain.com).' };
     }
 
-    if (!isValidStoveType(params.stoveType)) {
+    if (params.stoveType && !isValidStoveType(params.stoveType)) {
       return {
         success: false,
-        error: 'Stove classification (Electric Stove or Non-Electric Stove) is required.',
+        error: 'Invalid stove classification selected.',
       };
     }
 
@@ -1910,8 +2538,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       phone: params.phone?.trim() || '',
       stoveType: params.stoveType,
       stoveTypeReviewRequired: false,
-      stoveTypeUpdatedAt: nowIso,
-      stoveTypeUpdatedBy: currentUser.id,
+      stoveTypeUpdatedAt: params.stoveType ? nowIso : undefined,
+      stoveTypeUpdatedBy: params.stoveType ? currentUser.id : undefined,
       roomNumber: params.roomNumber?.trim() || '',
       notes: params.notes?.trim() || '',
       roleInGroup: params.role || 'member',
@@ -1934,13 +2562,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       OperationType.CREATE
     );
 
+    const stoveNote = newGroupMember.stoveType
+      ? ` (${newGroupMember.stoveType === 'electric' ? 'Electric Stove MK 10,000' : 'Non-Electric Stove MK 5,000'})`
+      : '';
+
     addAuditLog(
       'MEMBER_REGISTERED',
-      `Admin registered member ${newGroupMember.name} (${memberRefId}, ${newGroupMember.email}) as ${params.stoveType === 'electric' ? 'Electric Stove (MK 10,000)' : 'Non-Electric Stove (MK 5,000)'} in group ${currentGroup.name}.`,
+      `Admin registered member ${newGroupMember.name} (${memberRefId}, ${newGroupMember.email})${stoveNote} in group ${currentGroup.name}.`,
       {
         targetEntity: 'member',
         targetId: memberId,
-        afterValue: `${newGroupMember.stoveType} (MK ${RATES[newGroupMember.stoveType!].toLocaleString('en-US')})`,
+        afterValue: newGroupMember.stoveType
+          ? `${newGroupMember.stoveType} (MK ${RATES[newGroupMember.stoveType].toLocaleString('en-US')})`
+          : 'Registered',
         groupId: currentGroup.id,
       }
     );
@@ -1952,12 +2586,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         currentUser.id,
         'announcement',
         'individual',
-        `Welcome to ${currentGroup.name} — Directory Reference ${memberRefId}`,
-        `Hello ${newGroupMember.name},\n\nYou have been registered by administrator ${currentUser.name} into ${currentGroup.name}.\n` +
+        `Welcome to ${currentGroup.name} — Reference ${memberRefId}`,
+        `Hello ${newGroupMember.name},\n\nYou have been added by ${currentUser.name} to ${currentGroup.name}.\n` +
           `Your member reference code is: ${memberRefId}.\n` +
-          (newGroupMember.roomNumber ? `Assigned Unit: ${newGroupMember.roomNumber}\n` : '') +
-          `All future contribution notices, payment receipts, and balance reports will be delivered directly to this email.\n\n` +
-          `Thank you for keeping our shared community accountable and transparent!`,
+          (newGroupMember.roomNumber ? `Unit / Role: ${newGroupMember.roomNumber}\n` : '') +
+          `You can also join the app using invite code: ${currentGroup.joinCode}.\n\n` +
+          `Thank you for keeping our shared money clear and accountable!`,
         [newGroupMember],
         [],
         []
@@ -2004,7 +2638,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Update Member Record
   const updateMemberRecord = (memberId: string, updates: Partial<GroupMember>): boolean => {
-    if (!currentGroup || !currentUser || !canUserManageGroup(currentUser.role)) return false;
+    if (!currentGroup || !currentUser || !canManageGroupRole(getRoleForGroupId(currentGroup.id))) return false;
     const member = groupMembers.find(
       (m) => m.groupId === currentGroup.id && (m.id === memberId || m.userId === memberId)
     ) || groupMembers.find((m) => m.id === memberId || m.userId === memberId);
@@ -2041,10 +2675,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     stoveType,
     reason
   ) => {
-    if (!currentUser || !canUserManageGroup(currentUser.role)) {
+    if (!currentGroup || !currentUser || !canManageGroupRole(getRoleForGroupId(currentGroup.id))) {
       return { success: false, error: 'Only administrators may update stove classifications.' };
     }
-    if (!currentGroup) return { success: false, error: 'No active group.' };
     if (!isValidStoveType(stoveType)) {
       return { success: false, error: 'Invalid stove classification.' };
     }
@@ -2106,10 +2739,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Suspend Member
   const suspendMember: AppContextType['suspendMember'] = (memberId, reason) => {
-    if (!currentUser || !canUserManageGroup(currentUser.role)) {
+    if (!currentGroup || !currentUser || !canManageGroupRole(getRoleForGroupId(currentGroup.id))) {
       return { success: false, error: 'Only administrators may suspend members.' };
     }
-    if (!currentGroup) return { success: false, error: 'No active group.' };
     const member =
       groupMembers.find(
         (m) => m.groupId === currentGroup.id && (m.id === memberId || m.userId === memberId)
@@ -2155,10 +2787,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Reinstate Member
   const reinstateMember: AppContextType['reinstateMember'] = (memberId, reason) => {
-    if (!currentUser || !canUserManageGroup(currentUser.role)) {
+    if (!currentGroup || !currentUser || !canManageGroupRole(getRoleForGroupId(currentGroup.id))) {
       return { success: false, error: 'Only administrators may reinstate members.' };
     }
-    if (!currentGroup) return { success: false, error: 'No active group.' };
     const member =
       groupMembers.find(
         (m) => m.groupId === currentGroup.id && (m.id === memberId || m.userId === memberId)
@@ -2201,10 +2832,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Change Member Role
   const changeMemberRole: AppContextType['changeMemberRole'] = (memberId, newRole, reason) => {
-    if (!currentUser || !canUserManageGroup(currentUser.role)) {
+    if (!currentGroup || !currentUser || !canManageGroupRole(getRoleForGroupId(currentGroup.id))) {
       return { success: false, error: 'Only administrators may change member roles.' };
     }
-    if (!currentGroup) return { success: false, error: 'No active group.' };
     const member =
       groupMembers.find(
         (m) => m.groupId === currentGroup.id && (m.id === memberId || m.userId === memberId)
@@ -2252,7 +2882,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Remove Member Record (Soft remove preserving all historical transactions & audit logs)
   const removeMemberRecord = (memberId: string, reason?: string): boolean => {
-    if (!currentGroup || !currentUser || !canUserManageGroup(currentUser.role)) return false;
+    if (!currentGroup || !currentUser || !canManageGroupRole(getRoleForGroupId(currentGroup.id))) return false;
     const member =
       groupMembers.find(
         (m) => m.groupId === currentGroup.id && (m.id === memberId || m.userId === memberId)
@@ -2425,10 +3055,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     resolutionNote: string,
     status: 'resolved' | 'rejected'
   ) => {
-    if (!currentUser || !canUserManageGroup(currentUser.role)) return;
-    const nowIso = new Date().toISOString();
     const dispute = disputes.find((d) => d.id === disputeId);
-    if (!dispute) return;
+    if (!dispute || !currentUser || !canManageGroupRole(getRoleForGroupId(dispute.groupId))) return;
+    const nowIso = new Date().toISOString();
 
     const updatedDispute: Dispute = {
       ...dispute,
@@ -2495,6 +3124,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const rescanAndRepairRecords = (): IntegrityReport => {
     const res = auditAndRepairFinancialData({
+      groups,
       groupMembers,
       contributions,
       assignments,
@@ -2520,7 +3150,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const restorePreRepairSnapshot = (): ActionResult => {
-    if (!currentUser || !canUserManageGroup(currentUser.role)) {
+    if (!currentUser || !canManageGroupRole(effectiveRole)) {
       return { success: false, error: 'Only administrators may restore snapshots.' };
     }
     const raw = localStorage.getItem(PRE_REPAIR_SNAPSHOT_KEY);
@@ -2571,6 +3201,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCommitmentEvents([]);
     setExpenses([]);
     setDisputes([]);
+    setJoinRequests([]);
     setNotifications([]);
     setAuditLogs([]);
     setCommunications([]);
@@ -2586,9 +3217,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         authError,
         clearAuthError: () => setAuthError(null),
         firebaseAuthUser,
+        isEmailVerified,
         signInWithGoogle,
+        signInWithEmailAccount,
+        signUpWithEmailAccount,
+        sendPasswordReset,
+        resendVerification,
+        refreshAuthVerification,
         signOut,
         isFirebaseReady,
+        language,
+        setLanguage,
+        strings,
+        syncStatus,
+        pendingInviteCode,
+        setPendingInviteCode,
+        effectiveRole,
+        currentMemberRecord,
         actionError,
         clearActionError: () => setActionError(null),
         users,
@@ -2603,6 +3248,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         commitmentEvents,
         expenses,
         disputes,
+        joinRequests,
         notifications,
         auditLogs,
         communications,
@@ -2623,6 +3269,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateGroup,
         archiveGroup,
         transferGroupOwnership,
+        lookupInviteByCode,
+        joinGroupByCode,
+        approveJoinRequest,
+        regenerateGroupInvite,
         addMemberToGroup,
         addMemberRecord,
         updateMemberRecord,

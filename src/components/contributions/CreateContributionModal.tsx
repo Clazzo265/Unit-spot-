@@ -1,15 +1,21 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
-import { ExpenseCategory } from '../../types';
+import { ContributionAllocationMode, ExpenseCategory } from '../../types';
 import { formatMWK } from '../../utils/financialCalculations';
 import {
   RATES,
   STOVE_TYPE_LABELS,
+  isAccommodationGroup,
   isValidStoveType,
   parseMWKInput,
   resolveMemberInfo,
 } from '../../utils/financialConfig';
+import {
+  EXPENSE_CATEGORY_LABELS,
+  getExpenseCategoryLabel,
+  getGroupPreset,
+} from '../../utils/groupPresets';
 import { Modal } from '../ui/Modal';
 import { Plus, AlertCircle, CheckCircle2, AlertTriangle } from 'lucide-react';
 
@@ -24,6 +30,9 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
 }) => {
   const { currentGroup, groupMembers, users, createContribution } = useApp();
   const { showToast } = useToast();
+
+  const preset = useMemo(() => getGroupPreset(currentGroup?.category), [currentGroup?.category]);
+  const showAccommodationStoveRate = isAccommodationGroup(currentGroup);
 
   const activeMembers = useMemo(() => {
     if (!currentGroup) return [];
@@ -41,7 +50,9 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
   );
 
   const [title, setTitle] = useState('');
-  const [category, setCategory] = useState<ExpenseCategory>('electricity');
+  const [category, setCategory] = useState<ExpenseCategory>(
+    preset.suggestedContributionCategories[0] || 'other'
+  );
   const [totalTargetAmount, setTotalTargetAmount] = useState<string>('');
   const [month] = useState<number>(new Date().getMonth() + 1);
   const [year] = useState<number>(new Date().getFullYear());
@@ -52,8 +63,8 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
     return d.toISOString().split('T')[0];
   });
   const [description, setDescription] = useState<string>('');
-  const [allocationMode, setAllocationMode] = useState<'stove_rate' | 'equal' | 'custom'>(
-    'stove_rate'
+  const [allocationMode, setAllocationMode] = useState<ContributionAllocationMode>(
+    showAccommodationStoveRate ? 'stove_rate' : preset.defaultAllocationMode
   );
   const [customAmounts, setCustomAmounts] = useState<
     Record<string, { amount: string; notes: string }>
@@ -61,6 +72,19 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
 
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+
+  // Sync preset defaults whenever modal opens or active group changes
+  useEffect(() => {
+    if (!isOpen) return;
+    setCategory(preset.suggestedContributionCategories[0] || 'other');
+    const nextMode: ContributionAllocationMode = showAccommodationStoveRate
+      ? preset.defaultAllocationMode
+      : preset.defaultAllocationMode === 'stove_rate'
+        ? 'equal'
+        : preset.defaultAllocationMode;
+    setAllocationMode(nextMode);
+    setError('');
+  }, [isOpen, currentGroup?.id, preset, showAccommodationStoveRate]);
 
   const applyStoveRateDistribution = () => {
     if (activeMembers.length === 0) return;
@@ -100,7 +124,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
   useEffect(() => {
     if (!isOpen) return;
     if (activeMembers.length > 0) {
-      if (allocationMode === 'stove_rate') {
+      if (allocationMode === 'stove_rate' && showAccommodationStoveRate) {
         applyStoveRateDistribution();
       } else if (allocationMode === 'equal' && totalTargetAmount) {
         const parsed = parseMWKInput(totalTargetAmount);
@@ -108,7 +132,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, activeMembers.length, allocationMode]);
+  }, [isOpen, activeMembers.length, allocationMode, showAccommodationStoveRate]);
 
   const handleTotalChange = (val: string) => {
     const clean = val.replace(/[^\d]/g, '');
@@ -137,12 +161,16 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
 
     if (activeMembers.length === 0) {
       setError(
-        'Please add active members to this group in the Directory tab before assigning obligations.'
+        'Please add or invite active members in Group & Members before assigning contributions.'
       );
       return;
     }
 
-    if (allocationMode === 'stove_rate' && membersMissingStove.length > 0) {
+    if (
+      allocationMode === 'stove_rate' &&
+      showAccommodationStoveRate &&
+      membersMissingStove.length > 0
+    ) {
       setError(
         `Classify stove type (Electric or Non-Electric) in Directory for: ${membersMissingStove
           .map((m) => m.member.name)
@@ -174,6 +202,9 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
       });
     }
 
+    const effectiveMode: ContributionAllocationMode =
+      allocationMode === 'stove_rate' && !showAccommodationStoveRate ? 'equal' : allocationMode;
+
     const result = createContribution(
       {
         groupId: currentGroup.id,
@@ -185,6 +216,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
         deadline: `${deadline}T23:59:59Z`,
         description: description.trim() || undefined,
         status: 'active',
+        allocationMode: effectiveMode,
       },
       assignmentsPayload
     );
@@ -204,6 +236,8 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
     setError('');
     setSuccess(false);
     setTitle('');
+    setTotalTargetAmount('');
+    setCustomAmounts({});
     setDescription('');
     onClose();
   };
@@ -211,18 +245,27 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
   const parsedTargetDisplay = parseMWKInput(totalTargetAmount, { allowZero: true });
   const targetInt = parsedTargetDisplay.valid ? parsedTargetDisplay.value : 0;
 
+  const sortedCategories = useMemo(() => {
+    const suggested = new Set(preset.suggestedContributionCategories);
+    const allKeys = Object.keys(EXPENSE_CATEGORY_LABELS) as ExpenseCategory[];
+    return [
+      ...preset.suggestedContributionCategories.filter((c) => allKeys.includes(c)),
+      ...allKeys.filter((c) => !suggested.has(c)),
+    ];
+  }, [preset]);
+
   return (
     <Modal
       isOpen={isOpen}
       onClose={resetAndClose}
-      title="Create Contribution Obligation"
-      subtitle={currentGroup ? `Assign obligations for ${currentGroup.name}` : 'No group active'}
+      title="Set Member Contributions"
+      subtitle={currentGroup ? `Assign contributions for ${currentGroup.name}` : 'No group active'}
       maxWidthClass="max-w-xl"
     >
       {!currentGroup ? (
         <div className="py-6 text-center space-y-3">
           <p className="font-bold text-slate-800 dark:text-slate-200 text-sm">
-            Please create or select a financial group first.
+            Please create or select a group first.
           </p>
           <button
             type="button"
@@ -242,7 +285,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
           </h4>
           <p className="text-xs text-slate-600 dark:text-slate-400 max-w-sm mx-auto tabular-nums">
             Target of <strong className="text-slate-900 dark:text-white">{formatMWK(targetInt)}</strong>{' '}
-            distributed across {activeMembers.length} active member(s) with locked rate snapshots.
+            distributed across {activeMembers.length} active member(s).
           </p>
           <div className="pt-2">
             <button
@@ -250,7 +293,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
               onClick={resetAndClose}
               className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white font-semibold px-6 py-2.5 rounded-xl text-xs transition-colors cursor-pointer"
             >
-              Return to Dashboard
+              Return to Overview
             </button>
           </div>
         </div>
@@ -272,7 +315,11 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
             </label>
             <input
               type="text"
-              placeholder="e.g. May ESCOM Electricity, Water Bill, Shared Rent"
+              placeholder={
+                showAccommodationStoveRate
+                  ? 'e.g. May ESCOM Electricity, Water Bill, Shared Rent'
+                  : `e.g. ${preset.label} — Monthly Pool`
+              }
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-sm text-slate-900 dark:text-white focus:outline-none"
@@ -296,15 +343,11 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
                 }}
                 className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
               >
-                <option value="electricity">Electricity</option>
-                <option value="water">Water Utility</option>
-                <option value="rent">Rent</option>
-                <option value="internet">Internet</option>
-                <option value="security">Security</option>
-                <option value="waste">Waste</option>
-                <option value="groceries">Groceries</option>
-                <option value="maintenance">Maintenance</option>
-                <option value="other">Other</option>
+                {sortedCategories.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {getExpenseCategoryLabel(cat)}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -319,9 +362,9 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
                 placeholder="e.g. 50000"
                 value={totalTargetAmount}
                 onChange={(e) => handleTotalChange(e.target.value)}
-                readOnly={allocationMode === 'stove_rate'}
+                readOnly={allocationMode === 'stove_rate' && showAccommodationStoveRate}
                 className={`w-full min-h-[44px] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-bold font-mono text-slate-900 dark:text-white tabular-nums focus:outline-none ${
-                  allocationMode === 'stove_rate'
+                  allocationMode === 'stove_rate' && showAccommodationStoveRate
                     ? 'bg-slate-50 dark:bg-[#131D33]'
                     : 'bg-white dark:bg-[#11192C]'
                 }`}
@@ -331,7 +374,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
 
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
-                Payment Deadline *
+                Due Date *
               </label>
               <input
                 type="date"
@@ -347,23 +390,25 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
             <div className="pt-1 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300">
-                  Allocation Strategy
+                  How to Split
                 </span>
                 <div className="inline-flex p-1 bg-slate-100 dark:bg-[#11192C] rounded-xl border border-slate-200 dark:border-slate-800 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAllocationMode('stove_rate');
-                      applyStoveRateDistribution();
-                    }}
-                    className={`min-h-[34px] px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                      allocationMode === 'stove_rate'
-                        ? 'bg-white dark:bg-blue-600 shadow-xs text-slate-900 dark:text-white font-bold'
-                        : 'text-slate-600 dark:text-slate-400'
-                    }`}
-                  >
-                    Stove Rate
-                  </button>
+                  {showAccommodationStoveRate && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAllocationMode('stove_rate');
+                        applyStoveRateDistribution();
+                      }}
+                      className={`min-h-[34px] px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        allocationMode === 'stove_rate'
+                          ? 'bg-white dark:bg-blue-600 shadow-xs text-slate-900 dark:text-white font-bold'
+                          : 'text-slate-600 dark:text-slate-400'
+                      }`}
+                    >
+                      Stove Rate
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -392,25 +437,31 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
                 </div>
               </div>
 
-              {allocationMode === 'stove_rate' && membersMissingStove.length > 0 && (
-                <div className="p-3 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 rounded-xl text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2">
-                  <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="font-bold block">
-                      Stove classification required before auto-splitting:
-                    </span>
-                    <span>
-                      {membersMissingStove.map((m) => m.member.name).join(', ')} — classify in
-                      Group Directory first.
-                    </span>
+              {allocationMode === 'stove_rate' &&
+                showAccommodationStoveRate &&
+                membersMissingStove.length > 0 && (
+                  <div className="p-3 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 rounded-xl text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold block">
+                        Stove classification required before auto-splitting:
+                      </span>
+                      <span>
+                        {membersMissingStove.map((m) => m.member.name).join(', ')} — classify in
+                        Group Directory first, or choose Equal Share / Custom.
+                      </span>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
               {/* Member List Inputs */}
               <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden divide-y divide-slate-100 dark:divide-slate-800">
                 <div className="bg-slate-50 dark:bg-[#11192C] px-3.5 py-2 text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex justify-between">
-                  <span>Active Member &amp; Stove Tier</span>
+                  <span>
+                    {showAccommodationStoveRate
+                      ? 'Active Member & Stove Tier'
+                      : `Active Member (${preset.unitLabel})`}
+                  </span>
                   <span>Assigned MWK</span>
                 </div>
                 {activeMembers.map(({ member, info }) => (
@@ -427,17 +478,21 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
                           {member.name}
                         </div>
                         <div className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1.5 flex-wrap">
-                          <span>{info?.roomNumber || 'Main unit'}</span>
-                          <span aria-hidden="true">·</span>
-                          {isValidStoveType(member.stoveType) ? (
-                            <span className="font-medium text-slate-700 dark:text-slate-300 tabular-nums">
-                              {STOVE_TYPE_LABELS[member.stoveType]} (
-                              {formatMWK(RATES[member.stoveType])})
-                            </span>
-                          ) : (
-                            <span className="text-amber-700 dark:text-amber-400 font-semibold">
-                              Stove Type Unset
-                            </span>
+                          <span>{info?.roomNumber || preset.shortLabel}</span>
+                          {showAccommodationStoveRate && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              {isValidStoveType(member.stoveType) ? (
+                                <span className="font-medium text-slate-700 dark:text-slate-300 tabular-nums">
+                                  {STOVE_TYPE_LABELS[member.stoveType]} (
+                                  {formatMWK(RATES[member.stoveType])})
+                                </span>
+                              ) : (
+                                <span className="text-amber-700 dark:text-amber-400 font-semibold">
+                                  Stove Type Unset
+                                </span>
+                              )}
+                            </>
                           )}
                         </div>
                       </div>
@@ -449,7 +504,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
                         type="text"
                         inputMode="numeric"
                         pattern="[0-9]*"
-                        readOnly={allocationMode === 'stove_rate'}
+                        readOnly={allocationMode === 'stove_rate' && showAccommodationStoveRate}
                         value={customAmounts[member.id]?.amount || ''}
                         onChange={(e) => {
                           const digits = e.target.value.replace(/[^\d]/g, '');
@@ -463,7 +518,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
                           }));
                         }}
                         className={`w-24 min-h-[38px] border border-slate-200 dark:border-slate-700 rounded-lg px-2.5 py-1 text-xs font-bold font-mono text-slate-900 dark:text-white text-right tabular-nums focus:outline-none ${
-                          allocationMode === 'stove_rate'
+                          allocationMode === 'stove_rate' && showAccommodationStoveRate
                             ? 'bg-slate-50 dark:bg-[#131D33]'
                             : 'bg-white dark:bg-[#11192C]'
                         }`}
@@ -489,17 +544,17 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
           ) : (
             <div className="p-4 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 rounded-xl text-xs text-amber-800 dark:text-amber-200">
               This group currently has 0 active members. Go to{' '}
-              <strong>Groups &amp; Directory</strong> to register members first.
+              <strong>Group &amp; Members</strong> to add or invite members first.
             </div>
           )}
 
           <div>
             <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
-              Rules or Note to Members
+              Note to Members (Optional)
             </label>
             <textarea
               rows={2}
-              placeholder="e.g. Send Airtel Money or TNM Mpamba before deadline."
+              placeholder={preset.defaultRulesPlaceholder}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200 focus:outline-none"
@@ -520,7 +575,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
               className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 text-white px-5 py-2.5 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs whitespace-nowrap"
             >
               <Plus className="w-4 h-4" />
-              <span>Assign &amp; Dispatch</span>
+              <span>Assign Contributions</span>
             </button>
           </div>
         </form>

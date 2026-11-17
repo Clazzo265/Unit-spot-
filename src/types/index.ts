@@ -44,7 +44,20 @@ export type ExpenseCategory =
   | 'waste'
   | 'groceries'
   | 'maintenance'
+  | 'utilities'
+  | 'savings'
+  | 'welfare'
+  | 'event'
+  | 'transport'
+  | 'emergency'
+  | 'dues'
   | 'other';
+
+export type ContributionAllocationMode = 'stove_rate' | 'equal' | 'custom';
+
+export type GroupJoinPolicy = 'code_auto' | 'admin_approval';
+
+export type CloudSyncStatus = 'synced' | 'syncing' | 'offline_queued' | 'error';
 
 export type CommunicationType =
   | 'announcement'
@@ -61,7 +74,7 @@ export type AudienceType =
   | 'individual';
 
 /**
- * Authenticated Administrator operating the application
+ * Authenticated Operator (Administrator, Treasurer, or Group Member)
  */
 export interface Administrator {
   id: string;
@@ -71,14 +84,15 @@ export interface Administrator {
   role: AdministratorRole;
   avatarUrl?: string;
   roomNumber?: string;
+  preferredLanguage?: 'en' | 'ny';
   createdAt: string;
 }
 
-// User alias for compatibility with administrator identity
+// User alias for compatibility
 export type User = Administrator;
 
 /**
- * Member Record - registered in the group directory (NOT an application user/login account)
+ * Member Record - registered in the group directory (may optionally link to a real Firebase user account)
  */
 export interface MemberRecord {
   id: string;
@@ -107,6 +121,8 @@ export interface MemberRecord {
 export interface GroupMember {
   id: string;
   userId: string;
+  linkedUserId?: string;
+  joinedViaInvite?: boolean;
   groupId: string;
   name: string;
   email: string;
@@ -137,12 +153,28 @@ export interface Group {
   id: string;
   name: string;
   description: string;
-  category: 'house' | 'hostel' | 'workplace' | 'community' | 'church' | 'project';
+  category:
+    | 'house'
+    | 'hostel'
+    | 'family'
+    | 'friends'
+    | 'savings_group'
+    | 'church'
+    | 'business'
+    | 'club'
+    | 'community'
+    | 'project'
+    | 'workplace'
+    | 'event'
+    | 'other';
   adminId: string;
   treasurerId?: string;
+  memberUids?: string[];
   defaultCurrency: string; // 'MWK'
   paymentRules: string;
   joinCode: string;
+  joinPolicy?: GroupJoinPolicy;
+  inviteRevoked?: boolean;
   status?: 'active' | 'archived';
   archivedAt?: string;
   archivedBy?: string;
@@ -152,11 +184,38 @@ export interface Group {
   memberCount: number;
 }
 
+export interface GroupInvite {
+  inviteCode: string;
+  groupId: string;
+  groupName: string;
+  category: Group['category'];
+  joinPolicy: GroupJoinPolicy;
+  revoked: boolean;
+  adminId: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface JoinRequest {
+  id: string;
+  groupId: string;
+  userId: string;
+  name: string;
+  email: string;
+  phone?: string;
+  inviteCode: string;
+  status: 'pending' | 'approved' | 'rejected';
+  createdAt: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+}
+
 export interface Contribution {
   id: string;
   groupId: string;
   title: string;
   category: ExpenseCategory;
+  allocationMode?: ContributionAllocationMode;
   month: number; // 1-12
   year: number;
   totalTargetAmount: number; // integer MWK
@@ -193,7 +252,8 @@ export interface Payment {
   paymentMethod: PaymentMethod;
   transactionReference: string; // Mobile money TX ID or receipt ref
   idempotencyKey?: string;
-  collectorId: string; // Admin ID
+  collectorId: string; // Admin ID or self-submitting member UID
+  submittedByMemberId?: string;
   verificationStatus: PaymentVerificationStatus;
   rejectionReason?: string;
   verifiedAt?: string;
@@ -206,7 +266,8 @@ export interface Payment {
   disputedAt?: string;
   disputedBy?: string;
   receiptEvidenceUrl?: string;
-  receiptImageUrl?: string; // Captured camera image or uploaded screenshot
+  receiptImageUrl?: string; // Firebase Storage URL or compressed preview
+  receiptStoragePath?: string;
   receiptNote?: string;
   createdAt: string;
 }
@@ -264,6 +325,7 @@ export interface Expense {
   receiptNumber?: string;
   receiptEvidenceUrl?: string;
   receiptImageUrl?: string;
+  receiptStoragePath?: string;
   paymentReference?: string;
   status: 'approved' | 'pending_approval' | 'rejected';
   approvedBy?: string;

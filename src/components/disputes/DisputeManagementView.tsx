@@ -6,7 +6,7 @@ import { EmptyState } from '../ui/EmptyState';
 import { Dispute } from '../../types';
 import { formatMWK } from '../../utils/financialCalculations';
 import { parseMWKInput, resolveMemberInfo } from '../../utils/financialConfig';
-import { canUserManageGroup } from '../../utils/centralizedFinancialAdmin';
+import { canManageGroupRole } from '../../utils/centralizedFinancialAdmin';
 import { AlertTriangle, CheckCircle2, AlertCircle } from 'lucide-react';
 
 export const DisputeManagementView: React.FC = () => {
@@ -16,6 +16,8 @@ export const DisputeManagementView: React.FC = () => {
     users,
     currentGroup,
     currentUser,
+    effectiveRole,
+    currentMemberRecord,
     submitDispute,
     resolveDispute,
   } = useApp();
@@ -32,14 +34,14 @@ export const DisputeManagementView: React.FC = () => {
   const [resolutionNote, setResolutionNote] = useState('');
   const [resolutionError, setResolutionError] = useState('');
 
-  const canResolve = canUserManageGroup(currentUser?.role);
+  const canResolve = canManageGroupRole(effectiveRole);
 
   if (!currentGroup || !currentUser) {
     return (
       <EmptyState
         icon={AlertTriangle}
-        title="No Active Financial Circle"
-        description="Select or create an administrator group to inspect or log payment discrepancies."
+        title="No Active Group"
+        description="Create or join a group to ask a question or report a balance issue."
       />
     );
   }
@@ -67,14 +69,14 @@ export const DisputeManagementView: React.FC = () => {
 
     submitDispute({
       groupId: currentGroup.id,
-      memberId: currentUser.id,
+      memberId: currentMemberRecord?.id || currentUser.id,
       title: title.trim(),
       description: description.trim(),
       claimedAmount: parsedClaim,
     });
 
-    showToast('Discrepancy report logged', {
-      message: `"${title.trim()}" added to the permanent audit log.`,
+    showToast('Question / Issue Logged', {
+      message: `"${title.trim()}" added for admin review.`,
       variant: 'info',
     });
 
@@ -91,7 +93,7 @@ export const DisputeManagementView: React.FC = () => {
       return;
     }
     resolveDispute(selectedDisputeForResolution.id, resolutionNote.trim(), status);
-    showToast(status === 'resolved' ? 'Dispute resolved' : 'Dispute declined', {
+    showToast(status === 'resolved' ? 'Issue resolved' : 'Issue declined', {
       message: selectedDisputeForResolution.title,
       variant: status === 'resolved' ? 'success' : 'info',
     });
@@ -106,10 +108,10 @@ export const DisputeManagementView: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-slate-50 tracking-tight">
-            Dispute &amp; Discrepancy Resolution
+            Questions &amp; Balance Issues
           </h2>
           <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5">
-            Transparent conflict resolution with permanent audit history. No disputed record is ever silently deleted.
+            Ask a question about a balance, fix a missing payment reference, or resolve a dispute transparently
           </p>
         </div>
 
@@ -122,7 +124,7 @@ export const DisputeManagementView: React.FC = () => {
           className="min-h-[44px] inline-flex items-center justify-center gap-2 bg-slate-900 hover:bg-black dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer whitespace-nowrap"
         >
           <AlertTriangle className="w-4 h-4 text-[#E5B93C]" />
-          <span>File Discrepancy Report</span>
+          <span>Ask Question / Report Issue</span>
         </button>
       </div>
 

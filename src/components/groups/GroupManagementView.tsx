@@ -1,22 +1,27 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
-import { Group, GroupMember, StoveType, User } from '../../types';
+import { Group, GroupJoinPolicy, GroupMember, StoveType, User } from '../../types';
 import { formatMWK } from '../../utils/financialCalculations';
 import {
   RATES,
   STOVE_TYPE_LABELS,
+  buildInviteUrl,
+  isAccommodationGroup,
   isValidStoveType,
   resolveMemberInfo,
 } from '../../utils/financialConfig';
-import { canUserManageGroup } from '../../utils/centralizedFinancialAdmin';
+import {
+  GROUP_CATEGORY_LIST,
+  getGroupPreset,
+} from '../../utils/groupPresets';
+import { canManageGroupRole } from '../../utils/centralizedFinancialAdmin';
 import { Modal } from '../ui/Modal';
 import { EmptyState } from '../ui/EmptyState';
 import {
   Building2,
   Users,
   Plus,
-  Share2,
   Copy,
   Check,
   UserPlus,
@@ -32,20 +37,32 @@ import {
   UserCheck,
   PauseCircle,
   Search,
+  MessageCircle,
+  RefreshCw,
+  Link2,
+  Lock,
+  Unlock,
+  Clock,
+  X,
 } from 'lucide-react';
 import { MemberWelcomeModal } from './MemberWelcomeModal';
 
-export const GroupManagementView: React.FC = () => {
+export const GroupManagementView: React.FC<{
+  onOpenJoinGroup?: () => void;
+}> = ({ onOpenJoinGroup }) => {
   const {
     groups,
     currentGroup,
     setCurrentGroup,
     groupMembers,
     users,
+    joinRequests,
     createGroup,
     updateGroup,
     archiveGroup,
     transferGroupOwnership,
+    approveJoinRequest,
+    regenerateGroupInvite,
     addMemberToGroup,
     updateMemberStoveType,
     suspendMember,
@@ -53,19 +70,29 @@ export const GroupManagementView: React.FC = () => {
     changeMemberRole,
     removeMemberFromGroup,
     currentUser,
+    effectiveRole,
   } = useApp();
   const { showToast } = useToast();
 
-  const isGroupAdmin = canUserManageGroup(currentUser?.role);
+  const isGroupAdmin = canManageGroupRole(effectiveRole);
+  const showStoveFeatures = isAccommodationGroup(currentGroup);
+  const currentGroupPreset = useMemo(
+    () => getGroupPreset(currentGroup?.category),
+    [currentGroup?.category]
+  );
 
   const [isCreating, setIsCreating] = useState(false);
   const [name, setName] = useState('');
   const [category, setCategory] = useState<Group['category']>('house');
+  const [joinPolicy, setJoinPolicy] = useState<GroupJoinPolicy>('code_auto');
   const [description, setDescription] = useState('');
   const [paymentRules, setPaymentRules] = useState(
-    'All monthly contributions due by the agreed deadline. Partial payments require a clear commitment deadline.'
+    getGroupPreset('house').defaultRulesPlaceholder
   );
+  const [rulesTouched, setRulesTouched] = useState(false);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [copiedInviteUrl, setCopiedInviteUrl] = useState(false);
+  const [inviteActionBusy, setInviteActionBusy] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
   // Edit Group Modal
@@ -115,7 +142,7 @@ export const GroupManagementView: React.FC = () => {
     memberId: string;
     name: string;
   } | null>(null);
-  const [removalReason, setRemovalReason] = useState('Tenant moved out / lease ended');
+  const [removalReason, setRemovalReason] = useState('Member left the group');
 
   const [memberToSuspend, setMemberToSuspend] = useState<{
     memberId: string;
@@ -133,6 +160,11 @@ export const GroupManagementView: React.FC = () => {
     () => groups.filter((g) => g.status !== 'archived'),
     [groups]
   );
+
+  const pendingJoinRequests = useMemo(() => {
+    if (!currentGroup) return [];
+    return joinRequests.filter((r) => r.groupId === currentGroup.id && r.status === 'pending');
+  }, [currentGroup, joinRequests]);
 
   const activeMembers = useMemo(() => {
     if (!currentGroup) return [];
@@ -178,8 +210,16 @@ export const GroupManagementView: React.FC = () => {
   const handleCopy = (code: string) => {
     navigator.clipboard.writeText(code);
     setCopiedCode(code);
-    showToast('Group Code Copied', { message: `Join code ${code} copied to clipboard.` });
+    showToast('Invite Code Copied', { message: `Invite code ${code} copied to clipboard.` });
     setTimeout(() => setCopiedCode(null), 2000);
+  };
+
+  const handleCopyInviteLink = (code: string) => {
+    const url = buildInviteUrl(code);
+    navigator.clipboard.writeText(url);
+    setCopiedInviteUrl(true);
+    showToast('Invite Link Copied', { message: 'Share this link on WhatsApp or SMS.' });
+    setTimeout(() => setCopiedInviteUrl(false), 2000);
   };
 
   const handleCreate = (e: React.FormEvent) => {
@@ -189,16 +229,18 @@ export const GroupManagementView: React.FC = () => {
     createGroup({
       name: name.trim(),
       category,
+      joinPolicy,
       description: description.trim(),
       paymentRules: paymentRules.trim(),
       defaultCurrency: 'MWK',
     });
 
     showToast('Group Created', {
-      message: `${name.trim()} is now your active financial circle.`,
+      message: `${name.trim()} is now active. Share its invite code with members.`,
     });
     setName('');
     setDescription('');
+    setRulesTouched(false);
     setIsCreating(false);
   };
 
@@ -268,19 +310,17 @@ export const GroupManagementView: React.FC = () => {
       return;
     }
 
-    if (!isValidStoveType(newMemberStoveType)) {
-      setAddMemberError(
-        'Please select a stove classification (Electric Stove — MK 10,000 or Non-Electric Stove — MK 5,000).'
-      );
-      return;
-    }
+    const optionalStove =
+      showStoveFeatures && isValidStoveType(newMemberStoveType)
+        ? newMemberStoveType
+        : undefined;
 
     const result = addMemberToGroup({
       name: newMemberName.trim(),
       email: newMemberEmail.trim(),
       phone: newMemberPhone.trim(),
       role: newMemberRole,
-      stoveType: newMemberStoveType,
+      stoveType: optionalStove,
       roomNumber: newMemberRoom.trim() || undefined,
       notes: newMemberNotes.trim() || undefined,
     });
@@ -291,11 +331,11 @@ export const GroupManagementView: React.FC = () => {
     }
 
     if (result.user) {
-      showToast('Member Enrolled', {
+      showToast('Member Added', {
         message: `${result.user.name} added to ${currentGroup?.name}.`,
       });
       setNewlyAddedMember(result.user);
-      setNewlyAddedStoveType(newMemberStoveType);
+      setNewlyAddedStoveType(optionalStove);
       setIsWelcomeModalOpen(true);
       setNewMemberName('');
       setNewMemberEmail('');
@@ -373,23 +413,34 @@ export const GroupManagementView: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
-            Group Management &amp; Directory
+            {isGroupAdmin ? 'Group & Members' : 'My Groups'}
           </h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-            Manage shared houses, student hostels, stove contribution tiers, and resident lifecycles
+            Manage your groups, invite members by link or code, and view directory roles
           </p>
         </div>
 
-        {isGroupAdmin && (
+        <div className="flex flex-wrap items-center gap-2">
+          {onOpenJoinGroup && (
+            <button
+              type="button"
+              onClick={onOpenJoinGroup}
+              className="min-h-[44px] inline-flex items-center justify-center gap-2 bg-white hover:bg-slate-50 dark:bg-[#131D33] dark:hover:bg-[#1A2744] text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 px-4 py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <Link2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
+              <span>Join with Invite Code</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setIsCreating(true)}
             className="min-h-[44px] inline-flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer whitespace-nowrap"
           >
             <Plus className="w-4 h-4 text-[#E5B93C] dark:text-white" />
-            <span>Create New Group</span>
+            <span>Create Group</span>
           </button>
-        )}
+        </div>
       </div>
 
       {errorBanner && (
@@ -412,10 +463,12 @@ export const GroupManagementView: React.FC = () => {
       {activeGroups.length === 0 ? (
         <EmptyState
           icon={Building2}
-          title="No Active Financial Groups"
-          description="Create your first group to manage shared utilities, accommodation bills, or department funds."
-          actionLabel={isGroupAdmin ? 'Create First Group' : undefined}
-          onAction={isGroupAdmin ? () => setIsCreating(true) : undefined}
+          title="No Groups Joined Yet"
+          description="Create your first group in Malawi Kwacha or join an existing group using an invite code."
+          actionLabel="Create First Group"
+          onAction={() => setIsCreating(true)}
+          secondaryActionLabel={onOpenJoinGroup ? 'Join with Invite Code' : undefined}
+          onSecondaryAction={onOpenJoinGroup}
         />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -455,7 +508,7 @@ export const GroupManagementView: React.FC = () => {
                             : 'text-slate-500 dark:text-slate-400'
                         }`}
                       >
-                        {g.category} · {g.defaultCurrency}
+                        {getGroupPreset(g.category).label} · {g.defaultCurrency}
                       </span>
                     </div>
                   </div>
@@ -531,7 +584,7 @@ export const GroupManagementView: React.FC = () => {
                 </span>
               </div>
               <h3 className="text-xl font-bold text-slate-900 dark:text-white mt-1">
-                Group Members &amp; Stove Rate Tiers
+                {showStoveFeatures ? 'Group Members & Stove Tiers' : 'Group Members & Roles'}
               </h3>
             </div>
 
@@ -575,18 +628,216 @@ export const GroupManagementView: React.FC = () => {
                   </button>
                 </>
               )}
-
-              <button
-                type="button"
-                onClick={() => handleCopy(currentGroup.joinCode)}
-                className="min-h-[44px] inline-flex items-center gap-1.5 bg-slate-50 dark:bg-[#11192C] hover:bg-slate-100 dark:hover:bg-[#18233D] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 px-3 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
-              >
-                <Share2 className="w-3.5 h-3.5" />
-                <span>
-                  Code: <span className="font-mono">{currentGroup.joinCode}</span>
-                </span>
-              </button>
             </div>
+          </div>
+
+          {/* Invite & Join Requests Panel */}
+          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 space-y-3 text-xs">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div className="space-y-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-bold text-slate-900 dark:text-white">
+                    Invite Members by Link or Code
+                  </span>
+                  {currentGroup.inviteRevoked ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 dark:text-rose-400">
+                      <Lock className="w-3 h-3" />
+                      Invites Paused
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">
+                      <Unlock className="w-3 h-3" />
+                      {currentGroup.joinPolicy === 'admin_approval'
+                        ? 'Admin approval required'
+                        : 'Instant join active'}
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate">
+                  {buildInviteUrl(currentGroup.joinCode)}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleCopy(currentGroup.joinCode)}
+                  className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-white cursor-pointer"
+                >
+                  {copiedCode === currentGroup.joinCode ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  <span>{currentGroup.joinCode}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleCopyInviteLink(currentGroup.joinCode)}
+                  className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-700 font-semibold text-slate-800 dark:text-slate-200 cursor-pointer"
+                >
+                  {copiedInviteUrl ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                  ) : (
+                    <Link2 className="w-3.5 h-3.5" />
+                  )}
+                  <span>{copiedInviteUrl ? 'Copied Link' : 'Copy Link'}</span>
+                </button>
+
+                <a
+                  href={`https://wa.me/?text=${encodeURIComponent(
+                    `Join "${currentGroup.name}" on UNIT SPOT.\nInvite code: ${currentGroup.joinCode}\nLink: ${buildInviteUrl(
+                      currentGroup.joinCode
+                    )}`
+                  )}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold cursor-pointer"
+                >
+                  <MessageCircle className="w-3.5 h-3.5" />
+                  <span>WhatsApp</span>
+                </a>
+              </div>
+            </div>
+
+            {isGroupAdmin && (
+              <div className="pt-2.5 border-t border-slate-200/80 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={inviteActionBusy}
+                    onClick={async () => {
+                      setInviteActionBusy(true);
+                      const nextPolicy: GroupJoinPolicy =
+                        currentGroup.joinPolicy === 'admin_approval' ? 'code_auto' : 'admin_approval';
+                      const res = await regenerateGroupInvite(currentGroup.id, {
+                        joinPolicy: nextPolicy,
+                      });
+                      setInviteActionBusy(false);
+                      if (res.success) {
+                        showToast('Join Policy Updated', {
+                          message:
+                            nextPolicy === 'admin_approval'
+                              ? 'New members will wait for your approval before joining.'
+                              : 'Anyone with the invite code can join immediately.',
+                        });
+                      }
+                    }}
+                    className="min-h-[36px] px-3 py-1.5 rounded-lg bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-semibold hover:bg-slate-100 dark:hover:bg-[#18233D] cursor-pointer"
+                  >
+                    Switch to{' '}
+                    {currentGroup.joinPolicy === 'admin_approval'
+                      ? 'Instant Join'
+                      : 'Admin Approval'}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={inviteActionBusy}
+                    onClick={async () => {
+                      setInviteActionBusy(true);
+                      const res = await regenerateGroupInvite(currentGroup.id, {
+                        regenerate: true,
+                      });
+                      setInviteActionBusy(false);
+                      if (res.success) {
+                        showToast('New Invite Code Generated', {
+                          message: 'Previous invite link has been replaced.',
+                        });
+                      }
+                    }}
+                    className="min-h-[36px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-semibold hover:bg-slate-100 dark:hover:bg-[#18233D] cursor-pointer"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>New Code</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={inviteActionBusy}
+                    onClick={async () => {
+                      setInviteActionBusy(true);
+                      const nextRevoke = !currentGroup.inviteRevoked;
+                      const res = await regenerateGroupInvite(currentGroup.id, {
+                        revoke: nextRevoke,
+                      });
+                      setInviteActionBusy(false);
+                      if (res.success) {
+                        showToast(nextRevoke ? 'Invites Paused' : 'Invites Re-enabled', {
+                          variant: 'info',
+                        });
+                      }
+                    }}
+                    className="min-h-[36px] px-3 py-1.5 rounded-lg bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-semibold hover:bg-slate-100 dark:hover:bg-[#18233D] cursor-pointer"
+                  >
+                    {currentGroup.inviteRevoked ? 'Enable Invite' : 'Pause Invite'}
+                  </button>
+                </div>
+
+                {pendingJoinRequests.length > 0 && (
+                  <span className="inline-flex items-center gap-1 font-bold text-amber-700 dark:text-amber-400">
+                    <Clock className="w-3.5 h-3.5" />
+                    {pendingJoinRequests.length} waiting approval
+                  </span>
+                )}
+              </div>
+            )}
+
+            {isGroupAdmin && pendingJoinRequests.length > 0 && (
+              <div className="pt-2.5 border-t border-slate-200/80 dark:border-slate-800 space-y-2">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Pending Join Requests ({pendingJoinRequests.length})
+                </div>
+                <div className="space-y-2">
+                  {pendingJoinRequests.map((req) => (
+                    <div
+                      key={req.id}
+                      className="p-3 rounded-xl bg-white dark:bg-[#0D1424] border border-amber-200 dark:border-amber-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-bold text-slate-900 dark:text-white truncate">
+                          {req.name}
+                        </div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                          {req.email}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const res = await approveJoinRequest(currentGroup.id, req.id, false);
+                            if (res.success) {
+                              showToast('Request Declined', { variant: 'info' });
+                            }
+                          }}
+                          className="min-h-[36px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 font-semibold cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                          <span>Decline</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const res = await approveJoinRequest(currentGroup.id, req.id, true);
+                            if (res.success) {
+                              showToast('Member Approved', {
+                                message: `${req.name} can now access ${currentGroup.name}.`,
+                              });
+                            }
+                          }}
+                          className="min-h-[36px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold cursor-pointer"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Approve</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Directory Tabs + Live Member Search */}
@@ -705,24 +956,28 @@ export const GroupManagementView: React.FC = () => {
                       </div>
 
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600 dark:text-slate-300 tabular-nums">
-                        {hasStove ? (
-                          <span className="inline-flex items-center gap-1 font-semibold">
-                            {member.stoveType === 'electric' ? (
-                              <Zap className="w-3.5 h-3.5 text-[#D5A52B]" />
+                        {showStoveFeatures && (
+                          <>
+                            {hasStove ? (
+                              <span className="inline-flex items-center gap-1 font-semibold">
+                                {member.stoveType === 'electric' ? (
+                                  <Zap className="w-3.5 h-3.5 text-[#D5A52B]" />
+                                ) : (
+                                  <Flame className="w-3.5 h-3.5 text-slate-500" />
+                                )}
+                                {STOVE_TYPE_LABELS[member.stoveType!]} ·{' '}
+                                {formatMWK(RATES[member.stoveType!])}
+                              </span>
                             ) : (
-                              <Flame className="w-3.5 h-3.5 text-slate-500" />
+                              <span className="inline-flex items-center gap-1 text-slate-500 dark:text-slate-400 font-medium">
+                                <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                                Stove tier optional
+                              </span>
                             )}
-                            {STOVE_TYPE_LABELS[member.stoveType!]} ·{' '}
-                            {formatMWK(RATES[member.stoveType!])}
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 text-rose-600 dark:text-rose-400 font-bold">
-                            <AlertTriangle className="w-3.5 h-3.5" />
-                            Stove Review Needed
-                          </span>
+                            <span aria-hidden="true">·</span>
+                          </>
                         )}
-                        <span aria-hidden="true">·</span>
-                        <span>{member.roomNumber || 'Main unit'}</span>
+                        <span>{member.roomNumber || currentGroupPreset.shortLabel}</span>
                         {member.phone && (
                           <>
                             <span aria-hidden="true">·</span>
@@ -735,22 +990,24 @@ export const GroupManagementView: React.FC = () => {
                         <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200/80 dark:border-slate-800">
                           {member.status === 'active' && (
                             <>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setStoveModalMember(member);
-                                  setStoveModalType(
-                                    isValidStoveType(member.stoveType)
-                                      ? member.stoveType
-                                      : 'non_electric'
-                                  );
-                                  setStoveModalReason('');
-                                  setStoveModalError('');
-                                }}
-                                className="min-h-[40px] px-3 py-1.5 rounded-xl bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer"
-                              >
-                                {hasStove ? 'Stove Tier' : 'Classify Stove'}
-                              </button>
+                              {showStoveFeatures && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setStoveModalMember(member);
+                                    setStoveModalType(
+                                      isValidStoveType(member.stoveType)
+                                        ? member.stoveType
+                                        : 'non_electric'
+                                    );
+                                    setStoveModalReason('');
+                                    setStoveModalError('');
+                                  }}
+                                  className="min-h-[40px] px-3 py-1.5 rounded-xl bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer"
+                                >
+                                  {hasStove ? 'Stove Tier' : 'Set Stove Tier'}
+                                </button>
+                              )}
                               {!isSelf && (
                                 <>
                                   <button
@@ -844,10 +1101,10 @@ export const GroupManagementView: React.FC = () => {
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[11px]">
                       <th className="pb-3 font-semibold">Member</th>
-                      <th className="pb-3 font-semibold">Stove Tier &amp; Rate</th>
+                      {showStoveFeatures && <th className="pb-3 font-semibold">Stove Tier &amp; Rate</th>}
                       <th className="pb-3 font-semibold">Role</th>
                       <th className="pb-3 font-semibold">Phone</th>
-                      <th className="pb-3 font-semibold">Unit / Room</th>
+                      <th className="pb-3 font-semibold">{currentGroupPreset.unitLabel}</th>
                       <th className="pb-3 font-semibold">Status</th>
                       <th className="pb-3 font-semibold text-right">Actions</th>
                     </tr>
@@ -899,30 +1156,31 @@ export const GroupManagementView: React.FC = () => {
                             </div>
                           </td>
 
-                          <td className="py-3.5 pr-3 tabular-nums">
-                            {hasStove ? (
-                              <span
-                                className={`inline-flex items-center gap-1 text-xs font-semibold whitespace-nowrap ${
-                                  member.stoveType === 'electric'
-                                    ? 'text-amber-700 dark:text-[#E5B93C]'
-                                    : 'text-slate-700 dark:text-slate-300'
-                                }`}
-                              >
-                                {member.stoveType === 'electric' ? (
-                                  <Zap className="w-3.5 h-3.5" />
-                                ) : (
-                                  <Flame className="w-3.5 h-3.5" />
-                                )}
-                                {STOVE_TYPE_LABELS[member.stoveType!]} ·{' '}
-                                {formatMWK(RATES[member.stoveType!])}
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-xs font-bold text-rose-600 dark:text-rose-400 whitespace-nowrap">
-                                <AlertTriangle className="w-3.5 h-3.5" />
-                                Review Needed
-                              </span>
-                            )}
-                          </td>
+                          {showStoveFeatures && (
+                            <td className="py-3.5 pr-3 tabular-nums">
+                              {hasStove ? (
+                                <span
+                                  className={`inline-flex items-center gap-1 text-xs font-semibold whitespace-nowrap ${
+                                    member.stoveType === 'electric'
+                                      ? 'text-amber-700 dark:text-[#E5B93C]'
+                                      : 'text-slate-700 dark:text-slate-300'
+                                  }`}
+                                >
+                                  {member.stoveType === 'electric' ? (
+                                    <Zap className="w-3.5 h-3.5" />
+                                  ) : (
+                                    <Flame className="w-3.5 h-3.5" />
+                                  )}
+                                  {STOVE_TYPE_LABELS[member.stoveType!]} ·{' '}
+                                  {formatMWK(RATES[member.stoveType!])}
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                                  Optional / Unset
+                                </span>
+                              )}
+                            </td>
+                          )}
 
                           <td className="py-3.5 pr-3 capitalize font-semibold text-slate-700 dark:text-slate-300">
                             {member.roleInGroup}
@@ -933,7 +1191,7 @@ export const GroupManagementView: React.FC = () => {
                           </td>
 
                           <td className="py-3.5 pr-3 text-slate-600 dark:text-slate-400">
-                            {member.roomNumber || 'Main unit'}
+                            {member.roomNumber || '—'}
                           </td>
 
                           <td className="py-3.5 pr-3">
@@ -963,22 +1221,24 @@ export const GroupManagementView: React.FC = () => {
                               <div className="inline-flex items-center gap-1.5 justify-end flex-wrap">
                                 {member.status === 'active' && (
                                   <>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setStoveModalMember(member);
-                                        setStoveModalType(
-                                          isValidStoveType(member.stoveType)
-                                            ? member.stoveType
-                                            : 'non_electric'
-                                        );
-                                        setStoveModalReason('');
-                                        setStoveModalError('');
-                                      }}
-                                      className="min-h-[34px] text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:text-slate-950 dark:hover:text-white bg-slate-100 dark:bg-[#131D33] hover:bg-slate-200 dark:hover:bg-[#1A2744] px-2.5 py-1 rounded-lg cursor-pointer whitespace-nowrap"
-                                    >
-                                      {hasStove ? 'Stove Tier' : 'Classify Stove'}
-                                    </button>
+                                    {showStoveFeatures && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setStoveModalMember(member);
+                                          setStoveModalType(
+                                            isValidStoveType(member.stoveType)
+                                              ? member.stoveType
+                                              : 'non_electric'
+                                          );
+                                          setStoveModalReason('');
+                                          setStoveModalError('');
+                                        }}
+                                        className="min-h-[34px] text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:text-slate-950 dark:hover:text-white bg-slate-100 dark:bg-[#131D33] hover:bg-slate-200 dark:hover:bg-[#1A2744] px-2.5 py-1 rounded-lg cursor-pointer whitespace-nowrap"
+                                      >
+                                        {hasStove ? 'Stove Tier' : 'Set Stove Tier'}
+                                      </button>
+                                    )}
 
                                     {!isSelf && (
                                       <>
@@ -1079,20 +1339,20 @@ export const GroupManagementView: React.FC = () => {
         </div>
       )}
 
-      {/* Add Member Modal (Requires explicit Stove Type) */}
+      {/* Add Member Modal (Stove tier optional and shown only for Shared House / Hostel) */}
       <Modal
         isOpen={isAddingMember}
         onClose={() => setIsAddingMember(false)}
-        title={`Register Member in ${currentGroup?.name || 'Group'}`}
-        subtitle="Members receive notices via email without creating passwords"
+        title={`Add Member to ${currentGroup?.name || 'Group'}`}
+        subtitle="Add a member record or share the invite code so they can log in directly"
       >
         <form onSubmit={handleAddMember} className="space-y-4 text-xs">
           <div className="bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 rounded-xl p-3 text-slate-700 dark:text-slate-300">
             <span className="font-bold flex items-center gap-1.5 text-slate-900 dark:text-white mb-0.5">
               <ShieldCheck className="w-3.5 h-3.5 text-[#D5A52B]" />
-              Centralized Member Registration
+              Member Record
             </span>
-            Administrators record their stove rate tier and email for receipts and statements.
+            Members added with their email can sign in and see their balance &amp; send payment proofs right away.
           </div>
 
           {addMemberError && (
@@ -1133,50 +1393,53 @@ export const GroupManagementView: React.FC = () => {
             />
           </div>
 
-          {/* Mandatory Stove Classification */}
-          <div>
-            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
-              Stove Classification (Contribution Rate) *
-            </label>
-            <div className="grid grid-cols-2 gap-2.5 tabular-nums">
-              {(['electric', 'non_electric'] as const).map((tier) => (
-                <label
-                  key={tier}
-                  className={`p-3 rounded-xl border cursor-pointer transition-colors ${
-                    newMemberStoveType === tier
-                      ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-blue-600 text-white shadow-xs'
-                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#11192C] hover:bg-slate-50 dark:hover:bg-[#18233D] text-slate-800 dark:text-slate-200'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="stoveType"
-                    value={tier}
-                    checked={newMemberStoveType === tier}
-                    onChange={() => setNewMemberStoveType(tier)}
-                    className="sr-only"
-                  />
-                  <div className="font-bold text-xs flex items-center gap-1.5">
-                    {tier === 'electric' ? (
-                      <Zap className="w-3.5 h-3.5 text-[#E5B93C]" />
-                    ) : (
-                      <Flame className="w-3.5 h-3.5 text-[#E5B93C]" />
-                    )}
-                    <span>{STOVE_TYPE_LABELS[tier]}</span>
-                  </div>
-                  <div
-                    className={`text-xs font-extrabold font-mono mt-1 ${
+          {showStoveFeatures && (
+            <div>
+              <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
+                Stove Classification (Optional — for Electricity Tiers)
+              </label>
+              <div className="grid grid-cols-2 gap-2.5 tabular-nums">
+                {(['electric', 'non_electric'] as const).map((tier) => (
+                  <label
+                    key={tier}
+                    className={`p-3 rounded-xl border cursor-pointer transition-colors ${
                       newMemberStoveType === tier
-                        ? 'text-emerald-300 dark:text-white'
-                        : 'text-slate-600 dark:text-slate-300'
+                        ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-blue-600 text-white shadow-xs'
+                        : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#11192C] hover:bg-slate-50 dark:hover:bg-[#18233D] text-slate-800 dark:text-slate-200'
                     }`}
                   >
-                    {formatMWK(RATES[tier])} / cycle
-                  </div>
-                </label>
-              ))}
+                    <input
+                      type="radio"
+                      name="stoveType"
+                      value={tier}
+                      checked={newMemberStoveType === tier}
+                      onChange={() =>
+                        setNewMemberStoveType(newMemberStoveType === tier ? '' : tier)
+                      }
+                      className="sr-only"
+                    />
+                    <div className="font-bold text-xs flex items-center gap-1.5">
+                      {tier === 'electric' ? (
+                        <Zap className="w-3.5 h-3.5 text-[#E5B93C]" />
+                      ) : (
+                        <Flame className="w-3.5 h-3.5 text-[#E5B93C]" />
+                      )}
+                      <span>{STOVE_TYPE_LABELS[tier]}</span>
+                    </div>
+                    <div
+                      className={`text-xs font-extrabold font-mono mt-1 ${
+                        newMemberStoveType === tier
+                          ? 'text-emerald-300 dark:text-white'
+                          : 'text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      {formatMWK(RATES[tier])} / cycle
+                    </div>
+                  </label>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           <div>
             <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
@@ -1203,24 +1466,37 @@ export const GroupManagementView: React.FC = () => {
                 }
                 className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
               >
-                <option value="member">Regular Member</option>
+                <option value="member">Member</option>
                 <option value="treasurer">Treasurer / Collector</option>
-                <option value="admin">Group Administrator</option>
+                <option value="admin">Group Admin</option>
               </select>
             </div>
 
             <div>
               <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
-                Room / Unit
+                {currentGroupPreset.unitLabel}
               </label>
               <input
                 type="text"
-                placeholder="e.g. Room 1"
+                placeholder={showStoveFeatures ? 'e.g. Room 1' : 'Optional tag'}
                 value={newMemberRoom}
                 onChange={(e) => setNewMemberRoom(e.target.value)}
                 className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Optional Notes
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. Joined in May cycle"
+              value={newMemberNotes}
+              onChange={(e) => setNewMemberNotes(e.target.value)}
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
+            />
           </div>
 
           <div className="pt-2 flex items-center justify-end gap-3">
@@ -1235,7 +1511,7 @@ export const GroupManagementView: React.FC = () => {
               type="submit"
               className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-5 py-2 font-bold rounded-xl transition-colors cursor-pointer"
             >
-              Register Member
+              Add Member
             </button>
           </div>
         </form>
@@ -1314,63 +1590,107 @@ export const GroupManagementView: React.FC = () => {
       <Modal
         isOpen={isCreating}
         onClose={() => setIsCreating(false)}
-        title="Create New Group"
-        subtitle="Set up a shared financial circle in MWK"
+        title="Create a Group"
+        subtitle="Set up a clear shared ledger in Malawi Kwacha (MWK)"
       >
         <form onSubmit={handleCreate} className="space-y-4 text-xs">
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Group Type *
+            </label>
+            <select
+              value={category}
+              onChange={(e) => {
+                const nextCat = e.target.value as Group['category'];
+                setCategory(nextCat);
+                if (!rulesTouched) {
+                  setPaymentRules(getGroupPreset(nextCat).defaultRulesPlaceholder);
+                }
+              }}
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
+            >
+              {GROUP_CATEGORY_LIST.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label} — {preset.description}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div>
             <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
               Group Name *
             </label>
             <input
               type="text"
-              placeholder="e.g. Area 10 Shared Flat, Hostel Block C"
+              placeholder={`e.g. ${getGroupPreset(category).exampleGroupName}`}
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-900 dark:text-white"
               required
             />
           </div>
+
           <div>
-            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
-              Category *
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
+              How Members Join
             </label>
-            <select
-              value={category}
-              onChange={(e) => setCategory(e.target.value as Group['category'])}
-              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
-            >
-              <option value="house">Shared House / Flat</option>
-              <option value="hostel">University Student Hostel</option>
-              <option value="workplace">Office / Workplace Team</option>
-              <option value="community">Community Water &amp; Electricity</option>
-              <option value="church">Church / Fellowship Group</option>
-              <option value="project">Project / Event Committee</option>
-            </select>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setJoinPolicy('code_auto')}
+                className={`p-2.5 rounded-xl border text-left cursor-pointer transition-colors ${
+                  joinPolicy === 'code_auto'
+                    ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-blue-600 text-white'
+                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#11192C] text-slate-800 dark:text-slate-200'
+                }`}
+              >
+                <div className="font-bold">Instant with Code</div>
+                <div className="text-[11px] opacity-80 mt-0.5">Anyone with invite joins fast</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setJoinPolicy('admin_approval')}
+                className={`p-2.5 rounded-xl border text-left cursor-pointer transition-colors ${
+                  joinPolicy === 'admin_approval'
+                    ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-blue-600 text-white'
+                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#11192C] text-slate-800 dark:text-slate-200'
+                }`}
+              >
+                <div className="font-bold">Admin Approval</div>
+                <div className="text-[11px] opacity-80 mt-0.5">You approve each join request</div>
+              </button>
+            </div>
           </div>
+
           <div>
             <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
-              Description
+              Description (Optional)
             </label>
             <textarea
               rows={2}
-              placeholder="Describe group purpose or location..."
+              placeholder="What is this group for?"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200"
             />
           </div>
+
           <div>
             <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
-              Payment Rules &amp; Policies
+              Group Payment Rules
             </label>
             <textarea
               rows={2}
               value={paymentRules}
-              onChange={(e) => setPaymentRules(e.target.value)}
+              onChange={(e) => {
+                setRulesTouched(true);
+                setPaymentRules(e.target.value);
+              }}
               className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200"
             />
           </div>
+
           <div className="pt-2 flex items-center justify-end gap-3">
             <button
               type="button"

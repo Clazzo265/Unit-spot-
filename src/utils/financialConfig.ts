@@ -2,6 +2,7 @@ import {
   Contribution,
   ContributionAssignment,
   Expense,
+  Group,
   GroupMember,
   IntegrityFinding,
   IntegrityReport,
@@ -10,6 +11,7 @@ import {
   PaymentMethod,
   StoveType,
 } from '../types';
+import { supportsAccommodationRates } from './groupPresets';
 
 /**
  * SINGLE AUTHORITATIVE RATE CONFIGURATION
@@ -217,15 +219,61 @@ export function resolveMemberInfo(
   };
 }
 
+export function isAccommodationGroup(group?: Pick<Group, 'category'> | null): boolean {
+  return Boolean(group && supportsAccommodationRates(group.category));
+}
+
+export function generateJoinCode(prefix: string = 'US'): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const part1 = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  const part2 = Array.from({ length: 2 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  return `${prefix}-${part1}-${part2}`;
+}
+
+export function buildInviteUrl(joinCode: string, origin?: string): string {
+  const cleanCode = encodeURIComponent(joinCode.trim().toUpperCase());
+  const base =
+    origin ||
+    (typeof window !== 'undefined' && window.location?.origin ? window.location.origin : '');
+  return base ? `${base}/?join=${cleanCode}` : `/?join=${cleanCode}`;
+}
+
+export function extractInviteCodeFromUrl(hrefOrSearch: string): string | null {
+  try {
+    const cleanInput = (hrefOrSearch || '').trim();
+    if (!cleanInput) return null;
+
+    if (cleanInput.includes('join=')) {
+      const idx = cleanInput.indexOf('?');
+      const searchPart = idx >= 0 ? cleanInput.slice(idx) : `?${cleanInput}`;
+      const params = new URLSearchParams(searchPart.split('#')[0]);
+      const code = params.get('join')?.trim().toUpperCase();
+      if (code && /^[A-Z0-9-]{4,24}$/.test(code)) return code;
+    }
+
+    if (cleanInput.includes('code=')) {
+      const hashIdx = cleanInput.indexOf('#');
+      const hashPart = hashIdx >= 0 ? cleanInput.slice(hashIdx + 1) : cleanInput;
+      const params = new URLSearchParams(hashPart);
+      const code = params.get('code')?.trim().toUpperCase();
+      if (code && /^[A-Z0-9-]{4,24}$/.test(code)) return code;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 /**
  * Non-destructive historical data integrity scanner and repair utility.
  * - Never overwrites valid historical payments or rates silently.
  * - Coerces string-encoded integer amounts into safe integers and logs exact deltas.
- * - Flags members missing stoveType for admin classification review.
+ * - Flags missing stoveType ONLY for accommodation groups (house/hostel) that rely on stove billing.
  * - Flags duplicate transaction references for admin review.
  * - Syncs commitment currentOutstandingAmount deterministically from verified payments.
  */
 export function auditAndRepairFinancialData(input: {
+  groups?: Group[];
   groupMembers: GroupMember[];
   contributions: Contribution[];
   assignments: ContributionAssignment[];
@@ -246,9 +294,26 @@ export function auditAndRepairFinancialData(input: {
   let repairedCount = 0;
   let flaggedCount = 0;
 
-  // 1. Scan members for missing stoveType (flag for review, never invent)
+  const groupMap = new Map<string, Group>();
+  (input.groups || []).forEach((g) => groupMap.set(g.id, g));
+
+  // 1. Scan accommodation group members for missing stoveType (non-accommodation groups never need stoveType)
   const repairedMembers = input.groupMembers.map((m) => {
-    if (m.status === 'active' && !isValidStoveType(m.stoveType)) {
+    const parentGroup = groupMap.get(m.groupId);
+    const groupUsesStoves = parentGroup ? isAccommodationGroup(parentGroup) : true;
+    const hasElectricityStoveContrib = input.contributions.some(
+      (c) =>
+        c.groupId === m.groupId &&
+        c.category === 'electricity' &&
+        (c.allocationMode === 'stove_rate' || (!c.allocationMode && groupUsesStoves))
+    );
+
+    if (
+      groupUsesStoves &&
+      hasElectricityStoveContrib &&
+      m.status === 'active' &&
+      !isValidStoveType(m.stoveType)
+    ) {
       if (!m.stoveTypeReviewRequired) {
         flaggedCount++;
         findings.push({
@@ -256,7 +321,7 @@ export function auditAndRepairFinancialData(input: {
           entityType: 'member',
           entityId: m.id,
           severity: 'review_required',
-          issue: `Active member "${m.name}" is missing a stove classification (Electric vs Non-Electric).`,
+          issue: `Active member "${m.name}" is missing a stove classification (Electric vs Non-Electric) for electricity billing.`,
           beforeValue: String(m.stoveType ?? 'unset'),
           afterValue: 'stoveTypeReviewRequired=true',
           timestamp: nowIso,
@@ -360,10 +425,16 @@ export function auditAndRepairFinancialData(input: {
 
     const member = repairedMembers.find((m) => m.id === next.memberId || m.userId === next.memberId);
     const contrib = repairedContributions.find((c) => c.id === next.contributionId);
+    const contribGroup = contrib ? groupMap.get(contrib.groupId) : undefined;
+    const isStoveMode =
+      contrib?.allocationMode === 'stove_rate' ||
+      (!contrib?.allocationMode &&
+        contrib?.category === 'electricity' &&
+        (contribGroup ? isAccommodationGroup(contribGroup) : true));
     if (
       member &&
       isValidStoveType(member.stoveType) &&
-      contrib?.category === 'electricity'
+      isStoveMode
     ) {
       const expectedRate = RATES[member.stoveType];
       if (next.assignedAmount !== expectedRate && !next.notes?.toLowerCase().includes('custom')) {

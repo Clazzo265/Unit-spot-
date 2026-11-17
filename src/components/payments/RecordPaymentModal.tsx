@@ -15,10 +15,14 @@ import {
   generateIdempotencyKey,
   resolveMemberInfo,
   isValidStoveType,
+  isAccommodationGroup,
 } from '../../utils/financialConfig';
+import { canVerifyPaymentsRole } from '../../utils/centralizedFinancialAdmin';
+import { uploadReceiptImage } from '../../firebase/config';
 import { Modal } from '../ui/Modal';
 import {
   CheckCircle,
+  Clock,
   AlertCircle,
   AlertTriangle,
   Camera,
@@ -43,6 +47,9 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
 }) => {
   const {
     currentGroup,
+    currentUser,
+    effectiveRole,
+    currentMemberRecord,
     assignments,
     payments,
     groupMembers,
@@ -52,13 +59,25 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
   } = useApp();
   const { showToast } = useToast();
 
-  const groupAssignments = useMemo(
-    () =>
-      currentGroup
-        ? assignments.filter((a) => a.groupId === currentGroup.id)
-        : assignments,
-    [assignments, currentGroup]
-  );
+  const isVerifier = canVerifyPaymentsRole(effectiveRole);
+  const showStoveInfo = isAccommodationGroup(currentGroup);
+
+  const groupAssignments = useMemo(() => {
+    const scoped = currentGroup
+      ? assignments.filter((a) => a.groupId === currentGroup.id)
+      : assignments;
+    if (isVerifier) return scoped;
+    return scoped.filter((a) => {
+      if (
+        currentMemberRecord &&
+        (a.memberId === currentMemberRecord.id || a.memberId === currentMemberRecord.userId)
+      ) {
+        return true;
+      }
+      if (currentUser && a.memberId === currentUser.id) return true;
+      return false;
+    });
+  }, [assignments, currentGroup, isVerifier, currentMemberRecord, currentUser]);
 
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string>(
     defaultAssignmentId || groupAssignments[0]?.id || ''
@@ -68,6 +87,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
   const [transactionReference, setTransactionReference] = useState<string>('');
   const [receiptImage, setReceiptImage] = useState<string | null>(null);
   const [receiptImageName, setReceiptImageName] = useState<string>('');
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [showNotes, setShowNotes] = useState<boolean>(false);
   const [receiptNote, setReceiptNote] = useState<string>('');
   const [confirmOverpayment, setConfirmOverpayment] = useState<boolean>(false);
@@ -80,6 +100,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
     outstanding: number;
     overpaid: number;
     image?: string;
+    isPending: boolean;
   } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -90,6 +111,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
       setIdempotencyKey(generateIdempotencyKey());
       setConfirmOverpayment(false);
       setIsSubmitting(false);
+      setUploadProgress(null);
       setError('');
       if (defaultAssignmentId) {
         setSelectedAssignmentId(defaultAssignmentId);
@@ -180,13 +202,13 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
     if (file) handleProcessImage(file);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmitting) return;
     setError('');
 
     if (!currentAssignment) {
-      setError('Please select a valid member contribution obligation.');
+      setError('Please select a valid contribution balance.');
       return;
     }
 
@@ -212,40 +234,70 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
     }
 
     setIsSubmitting(true);
+    let finalReceiptUrl: string | undefined = receiptImage || undefined;
+    let finalStoragePath: string | undefined;
+
+    if (receiptImage) {
+      setUploadProgress(15);
+      const uploaded = await uploadReceiptImage(
+        currentGroup?.id || 'default',
+        idempotencyKey,
+        receiptImage,
+        (pct) => setUploadProgress(pct)
+      );
+      finalReceiptUrl = uploaded.url;
+      finalStoragePath = uploaded.storagePath;
+    }
+
     const result = recordPayment({
       assignmentId: selectedAssignmentId,
       amount: parsedAmount.value,
       paymentMethod,
       transactionReference: transactionReference.trim() || undefined,
       idempotencyKey,
-      receiptImageUrl: receiptImage || undefined,
+      receiptImageUrl: finalReceiptUrl,
+      receiptStoragePath: finalStoragePath,
       receiptNote: receiptNote.trim() || (receiptImage ? 'Picture proof attached' : undefined),
     });
+
     setIsSubmitting(false);
+    setUploadProgress(null);
 
     if (!result.success) {
-      setError(result.error || 'Could not record payment. Please check details.');
+      setError(result.error || 'Could not save payment. Please check details.');
       return;
     }
+
+    const isPending =
+      result.verificationStatus === 'pending_verification' ||
+      result.verificationStatus === 'submitted';
 
     setSuccessInfo({
       paymentId: result.paymentId,
       amount: parsedAmount.value,
       outstanding: result.newOutstanding,
       overpaid: result.overpaid || 0,
-      image: receiptImage || undefined,
+      image: finalReceiptUrl || receiptImage || undefined,
+      isPending,
     });
 
-    showToast('Payment Recorded', {
-      message: `${formatMWK(parsedAmount.value)} verified for ${memberInfo?.name || 'member'}.`,
-    });
+    if (isPending) {
+      showToast('Proof Submitted — Waiting Check', {
+        message: `${formatMWK(parsedAmount.value)} sent to the group admin/treasurer for verification.`,
+        variant: 'info',
+      });
+    } else {
+      showToast('Payment Recorded & Verified', {
+        message: `${formatMWK(parsedAmount.value)} verified for ${memberInfo?.name || 'member'}.`,
+      });
+    }
 
     const prefersReducedMotion =
       typeof window !== 'undefined' &&
       window.matchMedia &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    if (result.newOutstanding === 0 && !prefersReducedMotion) {
+    if (!isPending && result.newOutstanding === 0 && !prefersReducedMotion) {
       confetti({
         particleCount: 70,
         spread: 60,
@@ -260,6 +312,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
     setTransactionReference('');
     setReceiptImage(null);
     setReceiptImageName('');
+    setUploadProgress(null);
     setShowNotes(false);
     setReceiptNote('');
     setConfirmOverpayment(false);
@@ -278,25 +331,53 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={resetAndClose}
-      title="Record Payment"
-      subtitle="Verified ledger entry in Malawi Kwacha (MWK)"
+      title={isVerifier ? 'Record Payment' : 'Submit Payment Proof'}
+      subtitle={
+        isVerifier
+          ? 'Verified ledger entry in Malawi Kwacha (MWK)'
+          : 'Send your mobile money, bank, or cash proof for admin check'
+      }
       maxWidthClass="max-w-lg"
     >
       {successInfo ? (
         <div className="py-4 text-center space-y-4">
-          <div className="w-14 h-14 bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-400 rounded-full flex items-center justify-center mx-auto">
-            <CheckCircle className="w-8 h-8" />
+          <div
+            className={`w-14 h-14 rounded-full flex items-center justify-center mx-auto ${
+              successInfo.isPending
+                ? 'bg-amber-100 dark:bg-amber-950/70 text-amber-700 dark:text-amber-400'
+                : 'bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-400'
+            }`}
+          >
+            {successInfo.isPending ? (
+              <Clock className="w-8 h-8" />
+            ) : (
+              <CheckCircle className="w-8 h-8" />
+            )}
           </div>
           <div>
             <h4 className="text-xl font-bold text-slate-900 dark:text-white">
-              Payment Recorded Successfully
+              {successInfo.isPending
+                ? 'Proof Submitted — Waiting Admin Check'
+                : 'Payment Recorded & Verified'}
             </h4>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-              Transaction{' '}
-              <span className="font-mono font-semibold text-slate-900 dark:text-white">
-                {successInfo.paymentId}
-              </span>{' '}
-              has been verified and added to the ledger.
+              {successInfo.isPending ? (
+                <>
+                  Reference{' '}
+                  <span className="font-mono font-semibold text-slate-900 dark:text-white">
+                    {successInfo.paymentId}
+                  </span>{' '}
+                  was sent. Your balance updates once checked by the group admin or treasurer.
+                </>
+              ) : (
+                <>
+                  Transaction{' '}
+                  <span className="font-mono font-semibold text-slate-900 dark:text-white">
+                    {successInfo.paymentId}
+                  </span>{' '}
+                  has been verified and added to the ledger.
+                </>
+              )}
             </p>
           </div>
 
@@ -315,7 +396,9 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
               </div>
             )}
             <div className="flex justify-between text-sm">
-              <span className="text-slate-500 dark:text-slate-400">Amount Received</span>
+              <span className="text-slate-500 dark:text-slate-400">
+                {successInfo.isPending ? 'Amount Submitted' : 'Amount Received'}
+              </span>
               <span className="font-bold font-mono text-slate-900 dark:text-white">
                 {formatMWK(successInfo.amount)}
               </span>
@@ -335,7 +418,9 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
               </div>
             )}
             <div className="flex justify-between text-sm border-t border-slate-200 dark:border-slate-800 pt-2">
-              <span className="text-slate-500 dark:text-slate-400">New Balance</span>
+              <span className="text-slate-500 dark:text-slate-400">
+                {successInfo.isPending ? 'Current Balance (Pending Check)' : 'New Balance'}
+              </span>
               <span
                 className={`font-bold font-mono ${
                   successInfo.outstanding === 0
@@ -346,7 +431,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                 {formatMWK(successInfo.outstanding)}
               </span>
             </div>
-            {successInfo.overpaid > 0 && (
+            {!successInfo.isPending && successInfo.overpaid > 0 && (
               <div className="flex justify-between text-sm">
                 <span className="text-slate-500 dark:text-slate-400">Overpayment Credit</span>
                 <span className="font-bold font-mono text-amber-700 dark:text-amber-400">
@@ -370,10 +455,12 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
         <div className="py-8 text-center space-y-3">
           <AlertCircle className="w-10 h-10 text-amber-500 mx-auto" />
           <h4 className="font-bold text-slate-900 dark:text-white text-base">
-            No Obligations Assigned Yet
+            No Contributions Assigned Yet
           </h4>
           <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs mx-auto">
-            Create a contribution obligation for {currentGroup?.name || 'your group'} before recording payments.
+            {isVerifier
+              ? `Create a contribution for ${currentGroup?.name || 'your group'} before recording payments.`
+              : `No active contributions have been assigned to you in ${currentGroup?.name || 'this group'} yet.`}
           </p>
           <button
             type="button"
@@ -398,7 +485,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
           {/* Assignment Selector */}
           <div>
             <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
-              Member &amp; Contribution Obligation *
+              {isVerifier ? 'Member & Contribution Balance *' : 'Contribution to Pay *'}
             </label>
             <select
               value={selectedAssignmentId}
@@ -420,7 +507,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
 
                 return (
                   <option key={a.id} value={a.id}>
-                    {m?.name || 'Registered Member'} — {c?.title || 'Shared Obligation'} (
+                    {m?.name || 'Registered Member'} — {c?.title || 'Shared Contribution'} (
                     {overpaid > 0
                       ? `Overpaid +${formatMWK(overpaid)}`
                       : outstanding === 0
@@ -447,14 +534,16 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                     </span>
                   )}
                 </div>
-                {memberInfo && isValidStoveType(memberInfo.stoveType) ? (
-                  <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
-                    {STOVE_TYPE_LABELS[memberInfo.stoveType]} ({formatMWK(applicableStoveRate || 0)})
-                  </span>
-                ) : (
-                  <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-400">
-                    Stove Rate Unset
-                  </span>
+                {showStoveInfo && (
+                  memberInfo && isValidStoveType(memberInfo.stoveType) ? (
+                    <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                      {STOVE_TYPE_LABELS[memberInfo.stoveType]} ({formatMWK(applicableStoveRate || 0)})
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-400">
+                      Stove Tier Optional
+                    </span>
+                  )
                 )}
               </div>
 
@@ -536,7 +625,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
           {/* Amount Input (Strict Integer MWK) */}
           <div>
             <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
-              Amount Received (Whole MWK) *
+              {isVerifier ? 'Amount Received (Whole MWK) *' : 'Amount Paid (Whole MWK) *'}
             </label>
             <div className="relative">
               <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-bold text-slate-400 text-sm">
@@ -563,11 +652,11 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                 <div>
                   <p className="font-bold">
                     {currentOutstanding === 0
-                      ? 'This obligation is already settled (MK 0 remaining).'
+                      ? 'This contribution is already settled (MK 0 remaining).'
                       : `Entered amount exceeds remaining balance of ${formatMWK(currentOutstanding)}.`}
                   </p>
                   <p className="text-amber-800 dark:text-amber-300 mt-0.5">
-                    Recording this payment will create a member overpayment credit of{' '}
+                    Saving this payment will create a member overpayment credit of{' '}
                     <strong className="tabular-nums font-mono">
                       {formatMWK(projectedOverpayment)}
                     </strong>
@@ -582,7 +671,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                   onChange={(e) => setConfirmOverpayment(e.target.checked)}
                   className="rounded border-amber-400 text-blue-600"
                 />
-                <span>Confirm recording this overpayment entry</span>
+                <span>Confirm saving this overpayment entry</span>
               </label>
             </div>
           )}
@@ -704,8 +793,23 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                   className="min-h-[48px] py-2.5 px-3 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 hover:border-blue-500 dark:hover:border-cyan-400 bg-slate-50 dark:bg-[#11192C] hover:bg-slate-100 dark:hover:bg-[#18233D] text-xs font-semibold text-slate-800 dark:text-slate-200 flex items-center justify-center gap-2 cursor-pointer transition-colors"
                 >
                   <Upload className="w-4 h-4 text-blue-600 dark:text-cyan-400 shrink-0" />
-                  <span>Upload Image</span>
+                  <span>Upload Screenshot</span>
                 </button>
+              </div>
+            )}
+
+            {uploadProgress !== null && (
+              <div className="space-y-1 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
+                <div className="flex justify-between">
+                  <span>Uploading receipt image...</span>
+                  <span>{uploadProgress}%</span>
+                </div>
+                <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-600 transition-all"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
               </div>
             )}
           </div>
@@ -759,7 +863,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
               <div className="p-3 bg-white dark:bg-[#0D1424] border-t border-slate-200 dark:border-slate-800">
                 <textarea
                   rows={2}
-                  placeholder="Optional verification note, e.g. 'Confirmed SMS on treasurer phone'"
+                  placeholder="Optional note, e.g. 'Sent via Airtel Money from 0999...'"
                   value={receiptNote}
                   onChange={(e) => setReceiptNote(e.target.value)}
                   className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200 focus:outline-none"
@@ -781,8 +885,20 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
               disabled={isSubmitting}
               className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 text-white px-5 py-2.5 text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
-              <CheckCircle className="w-4 h-4 text-emerald-400 dark:text-white" />
-              <span>{isSubmitting ? 'Recording...' : 'Confirm & Record Payment'}</span>
+              {isVerifier ? (
+                <CheckCircle className="w-4 h-4 text-emerald-400 dark:text-white" />
+              ) : (
+                <Upload className="w-4 h-4 text-[#E5B93C] dark:text-white" />
+              )}
+              <span>
+                {isSubmitting
+                  ? uploadProgress !== null
+                    ? `Uploading ${uploadProgress}%...`
+                    : 'Saving...'
+                  : isVerifier
+                    ? 'Confirm & Record Payment'
+                    : 'Submit Proof for Check'}
+              </span>
             </button>
           </div>
         </form>

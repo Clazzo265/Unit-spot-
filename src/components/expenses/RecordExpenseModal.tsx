@@ -1,9 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
 import { ExpenseCategory } from '../../types';
 import { formatMWK } from '../../utils/financialCalculations';
 import { parseMWKInput } from '../../utils/financialConfig';
+import {
+  EXPENSE_CATEGORY_LABELS,
+  getExpenseCategoryLabel,
+  getGroupPreset,
+} from '../../utils/groupPresets';
 import { Modal } from '../ui/Modal';
 import { Plus, AlertCircle, CheckCircle } from 'lucide-react';
 
@@ -19,13 +24,33 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
   const { currentGroup, currentUser, recordExpense } = useApp();
   const { showToast } = useToast();
 
+  const preset = useMemo(() => getGroupPreset(currentGroup?.category), [currentGroup?.category]);
+
   const [name, setName] = useState<string>('');
-  const [category, setCategory] = useState<ExpenseCategory>('electricity');
+  const [category, setCategory] = useState<ExpenseCategory>(
+    preset.suggestedExpenseCategories[0] || 'other'
+  );
   const [amount, setAmount] = useState<string>('');
   const [description, setDescription] = useState<string>('');
   const [receiptNumber, setReceiptNumber] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [success, setSuccess] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setCategory(preset.suggestedExpenseCategories[0] || 'other');
+      setError('');
+    }
+  }, [isOpen, currentGroup?.id, preset]);
+
+  const sortedCategories = useMemo(() => {
+    const suggested = new Set(preset.suggestedExpenseCategories);
+    const allKeys = Object.keys(EXPENSE_CATEGORY_LABELS) as ExpenseCategory[];
+    return [
+      ...preset.suggestedExpenseCategories.filter((c) => allKeys.includes(c)),
+      ...allKeys.filter((c) => !suggested.has(c)),
+    ];
+  }, [preset]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -80,13 +105,13 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
       isOpen={isOpen}
       onClose={resetAndClose}
       title="Record Group Expense"
-      subtitle="Log where collected funds were spent"
+      subtitle="Show members where shared funds were spent"
       maxWidthClass="max-w-md"
     >
       {!currentGroup || !currentUser ? (
         <div className="py-6 text-center space-y-3">
           <p className="font-bold text-slate-800 dark:text-slate-200 text-sm">
-            Please create or select a financial group first.
+            Please create or select a group first.
           </p>
           <button
             type="button"
@@ -103,7 +128,7 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
           </div>
           <h4 className="font-bold text-slate-900 dark:text-white text-lg">Expense Logged</h4>
           <p className="text-xs text-slate-600 dark:text-slate-400">
-            Financial reconciliation ledger has been updated for{' '}
+            Group expense ledger updated for{' '}
             <strong className="text-slate-900 dark:text-white">{currentGroup.name}</strong>.
           </p>
           <div className="pt-2">
@@ -134,7 +159,7 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
             </label>
             <input
               type="text"
-              placeholder="e.g. ESCOM Electricity Token, Security Guard Fee, Generator Petrol"
+              placeholder="e.g. ESCOM Token, Venue Hire, Food & Drinks, Generator Petrol"
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-sm text-slate-900 dark:text-white focus:outline-none"
@@ -152,15 +177,11 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
                 onChange={(e) => setCategory(e.target.value as ExpenseCategory)}
                 className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
               >
-                <option value="electricity">Electricity</option>
-                <option value="water">Water Utility</option>
-                <option value="rent">Rent</option>
-                <option value="internet">Internet / WiFi</option>
-                <option value="security">Security</option>
-                <option value="waste">Waste Disposal</option>
-                <option value="groceries">Shared Groceries</option>
-                <option value="maintenance">Maintenance</option>
-                <option value="other">Other</option>
+                {sortedCategories.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {getExpenseCategoryLabel(cat)}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -186,7 +207,7 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
             </label>
             <input
               type="text"
-              placeholder="e.g. ESCOM-TKN-9281-0021"
+              placeholder="e.g. ESCOM-TKN-9281-0021 or Shop Receipt #44"
               value={receiptNumber}
               onChange={(e) => setReceiptNumber(e.target.value)}
               className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs font-mono text-slate-900 dark:text-white focus:outline-none"

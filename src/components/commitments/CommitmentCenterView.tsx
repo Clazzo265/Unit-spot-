@@ -3,7 +3,7 @@ import { useApp } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
 import { CommitmentCard } from './CommitmentCard';
 import { resolveMemberInfo } from '../../utils/financialConfig';
-import { canUserVerifyPayments } from '../../utils/centralizedFinancialAdmin';
+import { canVerifyPaymentsRole } from '../../utils/centralizedFinancialAdmin';
 import { Modal } from '../ui/Modal';
 import { EmptyState } from '../ui/EmptyState';
 import { Clock, Plus } from 'lucide-react';
@@ -18,7 +18,7 @@ export const CommitmentCenterView: React.FC<{
     users,
     contributions,
     currentGroup,
-    currentUser,
+    effectiveRole,
     requestCommitmentExtension,
     approveCommitmentExtension,
   } = useApp();
@@ -29,7 +29,7 @@ export const CommitmentCenterView: React.FC<{
   const [extensionDays, setExtensionDays] = useState<number>(3);
   const [extensionReason, setExtensionReason] = useState<string>('');
 
-  const canManage = canUserVerifyPayments(currentUser?.role);
+  const canManage = canVerifyPaymentsRole(effectiveRole);
 
   const groupCommitments = currentGroup
     ? commitments.filter((c) => c.groupId === currentGroup.id)

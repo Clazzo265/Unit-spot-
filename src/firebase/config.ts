@@ -1,28 +1,153 @@
 import { initializeApp } from 'firebase/app';
-import { 
-  getAuth, 
-  signInWithPopup, 
-  GoogleAuthProvider, 
+import {
+  getAuth,
+  signInWithPopup,
+  GoogleAuthProvider,
   signOut as fbSignOut,
   onAuthStateChanged,
-  User as FirebaseUser
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  sendPasswordResetEmail,
+  sendEmailVerification,
+  updateProfile,
+  User as FirebaseUser,
 } from 'firebase/auth';
-import { 
-  getFirestore, 
-  doc, 
-  getDocFromServer 
+import {
+  getFirestore,
+  doc,
+  getDocFromServer,
 } from 'firebase/firestore';
+import {
+  getStorage,
+  ref as storageRef,
+  uploadBytesResumable,
+  getDownloadURL,
+} from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase App
 export const app = initializeApp(firebaseConfig);
 
-// Initialize Auth & Google Provider
+// Initialize Auth & Providers
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
 // Initialize Firestore with specific database ID from config
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+// Initialize Firebase Storage for receipts
+export const storage = getStorage(app);
+
+export {
+  signInWithPopup,
+  fbSignOut,
+  onAuthStateChanged,
+};
+export type { FirebaseUser };
+
+export async function signUpWithEmail(name: string, email: string, password: string): Promise<FirebaseUser> {
+  const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+  if (name.trim()) {
+    await updateProfile(credential.user, { displayName: name.trim() });
+  }
+  try {
+    await sendEmailVerification(credential.user);
+  } catch (err) {
+    console.warn('Could not send initial verification email:', err);
+  }
+  return credential.user;
+}
+
+export async function signInWithEmail(email: string, password: string): Promise<FirebaseUser> {
+  const credential = await signInWithEmailAndPassword(auth, email.trim(), password);
+  return credential.user;
+}
+
+export async function resetPassword(email: string): Promise<void> {
+  await sendPasswordResetEmail(auth, email.trim());
+}
+
+export async function resendVerificationEmail(): Promise<void> {
+  if (!auth.currentUser) {
+    throw new Error('No signed-in user to verify.');
+  }
+  await sendEmailVerification(auth.currentUser);
+}
+
+export async function reloadCurrentUser(): Promise<FirebaseUser | null> {
+  if (!auth.currentUser) return null;
+  await auth.currentUser.reload();
+  return auth.currentUser;
+}
+
+function dataUrlToBlob(dataUrl: string): Blob {
+  const parts = dataUrl.split(',');
+  const mimeMatch = parts[0].match(/:(.*?);/);
+  const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+  const binary = atob(parts[1] || '');
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mime });
+}
+
+/**
+ * Upload compressed receipt image to Firebase Storage when online & configured.
+ * Returns { url, storagePath } if uploaded, or falls back cleanly to compressed dataUrl if Storage fails/offline.
+ */
+export async function uploadReceiptImage(
+  groupId: string,
+  recordId: string,
+  dataUrl: string,
+  onProgress?: (pct: number) => void
+): Promise<{ url: string; storagePath?: string; uploadedToCloud: boolean }> {
+  if (!dataUrl || !dataUrl.startsWith('data:image/')) {
+    return { url: dataUrl, uploadedToCloud: false };
+  }
+
+  try {
+    const blob = dataUrlToBlob(dataUrl);
+    const path = `receipts/${groupId}/${recordId}.jpg`;
+    const fileRef = storageRef(storage, path);
+
+    const downloadUrl = await Promise.race<string>([
+      new Promise<string>((resolve, reject) => {
+        const task = uploadBytesResumable(fileRef, blob, {
+          contentType: blob.type || 'image/jpeg',
+        });
+        task.on(
+          'state_changed',
+          (snapshot) => {
+            if (snapshot.totalBytes > 0 && onProgress) {
+              const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+              onProgress(pct);
+            }
+          },
+          (err) => reject(err),
+          async () => {
+            try {
+              const url = await getDownloadURL(task.snapshot.ref);
+              onProgress?.(100);
+              resolve(url);
+            } catch (urlErr) {
+              reject(urlErr);
+            }
+          }
+        );
+      }),
+      new Promise<string>((_, reject) =>
+        setTimeout(() => reject(new Error('Storage upload timeout')), 12000)
+      ),
+    ]);
+
+    return { url: downloadUrl, storagePath: path, uploadedToCloud: true };
+  } catch (err) {
+    console.warn('Firebase Storage receipt upload unavailable; storing compressed preview fallback:', err);
+    return { url: dataUrl, uploadedToCloud: false };
+  }
+}
 
 export enum OperationType {
   CREATE = 'create',

@@ -107,7 +107,7 @@ export const UnitSpotLogo: React.FC<LogoProps> = ({
             </span>
           </div>
           <span className={`text-[9px] tracking-widest font-semibold uppercase mt-0.5 whitespace-nowrap ${subtitleColorClass}`}>
-            Accommodation &amp; Finance
+            Shared Group Finance
           </span>
         </div>
       )}

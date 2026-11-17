@@ -1,9 +1,18 @@
-import React, { useState, useEffect, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import { useApp } from './context/AppContext';
 import { UnitSpotLogo } from './components/brand/UnitSpotLogo';
 import { ThemeToggle } from './components/ui/ThemeToggle';
 import { ViewSkeleton } from './components/ui/Skeleton';
 import { LandingPage } from './components/landing/LandingPage';
+import {
+  AuthOnboardingCard,
+  EmailVerificationGate,
+  JoinGroupModal,
+} from './components/auth/AuthOnboardingModal';
+import {
+  canManageGroupRole,
+  canVerifyPaymentsRole,
+} from './utils/centralizedFinancialAdmin';
 import {
   LayoutDashboard,
   Users,
@@ -18,17 +27,24 @@ import {
   Menu,
   X,
   Mail,
-  ShieldCheck,
   ArrowLeft,
   AlertCircle,
-  CheckCircle2,
   MoreHorizontal,
+  KeyRound,
+  Cloud,
+  CloudOff,
+  RefreshCw,
 } from 'lucide-react';
 
 // Code-split views & modals for faster initial load
 const MainDashboardView = lazy(() =>
   import('./components/dashboard/MainDashboardView').then((m) => ({
     default: m.MainDashboardView,
+  }))
+);
+const MemberDashboardView = lazy(() =>
+  import('./components/member/MemberDashboardView').then((m) => ({
+    default: m.MemberDashboardView,
   }))
 );
 const GroupManagementView = lazy(() =>
@@ -98,55 +114,11 @@ const RecordExpenseModal = lazy(() =>
   }))
 );
 
-const PAGE_METADATA: Record<string, { title: string; subtitle: string }> = {
-  dashboard: {
-    title: 'Main Dashboard',
-    subtitle: 'Collection progress, member balances, and verified treasury pulse',
-  },
-  groups: {
-    title: 'Groups & Directory',
-    subtitle: 'Manage resident records, stove tiers, and member welcome cards',
-  },
-  payments: {
-    title: 'Payments & Verification',
-    subtitle: 'Inspect receipt photos, verify inflows, and issue audited reversals',
-  },
-  commitments: {
-    title: 'Commitments & Countdowns',
-    subtitle: 'Track partial payment promises and upcoming balance deadlines',
-  },
-  expenses: {
-    title: 'Expenses & Treasury',
-    subtitle: 'Record ESCOM tokens, utilities, and reconcile against inflows',
-  },
-  communications: {
-    title: 'Email Notices & Hub',
-    subtitle: 'Send private obligation notices, reminders, and announcements',
-  },
-  reports: {
-    title: 'Financial Reports',
-    subtitle: 'Generate printable MWK statements and export CSV audit logs',
-  },
-  disputes: {
-    title: 'Disputes & Inquiries',
-    subtitle: 'Review and resolve member balance questions transparently',
-  },
-  notifications: {
-    title: 'Notification Centre',
-    subtitle: 'System alerts, upcoming deadlines, and activity feed',
-  },
-  settings: {
-    title: 'Account & Audit Settings',
-    subtitle: 'Administrator session, rate rules, and workspace preferences',
-  },
-};
-
 export default function App() {
   const {
     currentUser,
     authStatus,
-    authError,
-    clearAuthError,
+    isEmailVerified,
     actionError,
     clearActionError,
     currentGroup,
@@ -155,14 +127,32 @@ export default function App() {
     notifications,
     commitments,
     communications,
+    payments,
     firebaseAuthUser,
-    signInWithGoogle,
     signOut,
+    effectiveRole,
+    strings,
+    syncStatus,
+    pendingInviteCode,
   } = useApp();
 
-  const [viewMode, setViewMode] = useState<'landing' | 'app'>('app');
+  const hasInviteUrl =
+    typeof window !== 'undefined' &&
+    (window.location.search.includes('join=') || window.location.hash.includes('code='));
+  const hasAutostart =
+    typeof window !== 'undefined' && window.location.search.includes('autostart=1');
+
+  const [viewMode, setViewMode] = useState<'landing' | 'app'>(
+    hasInviteUrl || hasAutostart ? 'app' : 'landing'
+  );
+  const [onboardingIntent, setOnboardingIntent] = useState<'create' | 'join'>(
+    hasInviteUrl ? 'join' : 'create'
+  );
+  const userExitedToLandingRef = useRef(false);
+
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
+  const [isJoinModalOpen, setIsJoinModalOpen] = useState<boolean>(false);
 
   // Modals state
   const [isRecordPaymentOpen, setIsRecordPaymentOpen] = useState(false);
@@ -178,6 +168,20 @@ export default function App() {
   const [isCreateContributionOpen, setIsCreateContributionOpen] = useState(false);
   const [isRecordExpenseOpen, setIsRecordExpenseOpen] = useState(false);
 
+  // Auto-enter app once Firebase restores an active session (unless user deliberately returned to landing)
+  useEffect(() => {
+    if (authStatus === 'authenticated' && firebaseAuthUser && !userExitedToLandingRef.current) {
+      setViewMode('app');
+    }
+  }, [authStatus, firebaseAuthUser]);
+
+  // Auto-open Join Group modal if user arrived with ?join=CODE and is now signed in & verified
+  useEffect(() => {
+    if (firebaseAuthUser && isEmailVerified && pendingInviteCode && viewMode === 'app') {
+      setIsJoinModalOpen(true);
+    }
+  }, [firebaseAuthUser, isEmailVerified, pendingInviteCode, viewMode]);
+
   // Close mobile drawer on Escape
   useEffect(() => {
     if (!isMobileMenuOpen) return;
@@ -190,8 +194,20 @@ export default function App() {
 
   const activeGroups = groups.filter((g) => g.status !== 'archived');
 
+  const openWorkspaceFromLanding = (intent?: 'create' | 'join') => {
+    userExitedToLandingRef.current = false;
+    if (intent) setOnboardingIntent(intent);
+    setViewMode('app');
+  };
+
+  const returnToLanding = () => {
+    userExitedToLandingRef.current = true;
+    setViewMode('landing');
+    setIsMobileMenuOpen(false);
+  };
+
   if (viewMode === 'landing') {
-    return <LandingPage onGetStarted={() => setViewMode('app')} />;
+    return <LandingPage onGetStarted={openWorkspaceFromLanding} />;
   }
 
   // Loading auth state
@@ -203,21 +219,20 @@ export default function App() {
             <UnitSpotLogo size="md" />
           </div>
           <div className="h-1.5 w-32 mx-auto rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-            <div className="h-full w-1/2 bg-blue-600 dark:bg-cyan-400 rounded-full animate-pulse" />
+            <div className="h-full w-1/2 bg-blue-600 dark:bg-cyan-400 rounded-full" />
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
-            Verifying administrator session...
+            Checking your UNIT SPOT session...
           </p>
         </div>
       </div>
     );
   }
 
-  // Strict Administrator Authentication Gate
+  // Unified Auth + Create/Join Onboarding Gate
   if (!firebaseAuthUser || !currentUser) {
     return (
       <div className="relative min-h-screen bg-[#F6F8FC] dark:bg-[#070B14] text-slate-900 dark:text-slate-100 flex flex-col justify-between p-4 sm:p-8 overflow-x-hidden">
-        {/* Ambient radial highlight in dark mode */}
         <div
           aria-hidden="true"
           className="pointer-events-none fixed inset-x-0 top-0 h-[380px] opacity-0 dark:opacity-100 bg-[radial-gradient(ellipse_75%_55%_at_50%_-10%,rgba(59,130,246,0.22),rgba(139,92,246,0.1)_48%,transparent_80%)]"
@@ -235,7 +250,7 @@ export default function App() {
             <ThemeToggle />
             <button
               type="button"
-              onClick={() => setViewMode('landing')}
+              onClick={returnToLanding}
               className="min-h-[44px] inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:text-slate-950 dark:hover:text-white px-3 sm:px-3.5 py-2 rounded-xl bg-white/80 dark:bg-[#11192C] border border-slate-200 dark:border-slate-700/80 hover:bg-slate-100 dark:hover:bg-[#18233D] transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               <ArrowLeft className="w-3.5 h-3.5 shrink-0" />
@@ -246,98 +261,37 @@ export default function App() {
         </header>
 
         <main className="relative z-10 max-w-md w-full mx-auto my-8 sm:my-10">
-          <div className="bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 shadow-xl shadow-slate-200/50 dark:shadow-black/40 space-y-6">
-            <div className="space-y-2.5">
-              <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
-                <ShieldCheck className="w-4 h-4 shrink-0" />
-                <span>Centralized Administrator Access</span>
-              </div>
-              <h1 className="text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight">
-                Sign in to manage shared finances
-              </h1>
-              <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-                UnitSpot is operated exclusively by verified group administrators. Sign in with your Google account to manage member directories, stove-tier rates, verified receipts, and audit logs.
-              </p>
-            </div>
-
-            <ul className="space-y-2 text-xs text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-[#131D33]/70 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-4">
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-blue-600 dark:text-cyan-400 shrink-0" />
-                <span>Real-time Firebase cloud sync across your devices</span>
-              </li>
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-blue-600 dark:text-cyan-400 shrink-0" />
-                <span>Members receive updates by email — no passwords needed</span>
-              </li>
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-blue-600 dark:text-cyan-400 shrink-0" />
-                <span>Whole-integer MWK reconciliation &amp; non-destructive reversals</span>
-              </li>
-            </ul>
-
-            {authError && (
-              <div
-                role="alert"
-                className="p-3.5 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800/70 rounded-xl text-xs text-rose-800 dark:text-rose-200 flex items-start gap-2.5"
-              >
-                <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
-                <div className="flex-1 leading-relaxed">{authError}</div>
-                <button
-                  type="button"
-                  onClick={clearAuthError}
-                  className="min-h-[36px] px-2 text-rose-700 dark:text-rose-300 hover:text-rose-950 dark:hover:text-white font-semibold cursor-pointer"
-                >
-                  Dismiss
-                </button>
-              </div>
-            )}
-
-            <div className="space-y-3">
-              <button
-                type="button"
-                onClick={signInWithGoogle}
-                className="w-full min-h-[48px] flex items-center justify-center gap-2.5 bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white font-bold py-3 px-4 rounded-xl text-sm transition-colors cursor-pointer shadow-sm"
-              >
-                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-                  <path
-                    fill="#4285F4"
-                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                  />
-                  <path
-                    fill="#34A853"
-                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                  />
-                  <path
-                    fill="#EA4335"
-                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                  />
-                </svg>
-                <span>Continue with Google</span>
-              </button>
-
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 text-center leading-relaxed">
-                Uses a secure Google sign-in popup. Ensure popups are allowed in your browser if the sign-in window does not appear.
-              </p>
-            </div>
-          </div>
+          <AuthOnboardingCard initialIntent={onboardingIntent} />
         </main>
 
         <footer className="relative z-10 max-w-5xl w-full mx-auto text-center text-[11px] text-slate-500 dark:text-slate-400">
-          Every Contribution · Every Transaction · Clear · Malawi Kwacha (MWK)
+          {strings.tagline} · Malawi Kwacha (MWK)
         </footer>
       </div>
     );
   }
 
-  // Unread notifications count
+  // Email verification gate (matches firestore.rules email_verified == true requirement)
+  if (!isEmailVerified) {
+    return <EmailVerificationGate />;
+  }
+
+  const isGroupAdmin = canManageGroupRole(effectiveRole);
+  const isVerifier = canVerifyPaymentsRole(effectiveRole);
+
+  // Unread notifications & pending proof counts
   const unreadCount = notifications.filter(
     (n) => !n.read && (n.userId === currentUser.id || !n.userId)
   ).length;
   const activeCountdownsCount = commitments.filter((c) => c.currentOutstandingAmount > 0).length;
+  const pendingVerificationCount = currentGroup
+    ? payments.filter(
+        (p) =>
+          p.groupId === currentGroup.id &&
+          (p.verificationStatus === 'pending_verification' ||
+            p.verificationStatus === 'submitted')
+      ).length
+    : 0;
 
   const handleOpenRecordPayment = (assignmentId?: string) => {
     setRecordPaymentAssignmentId(assignmentId);
@@ -349,55 +303,162 @@ export default function App() {
     setIsCreateCommitmentOpen(true);
   };
 
-  const navSections = [
-    {
-      heading: 'Overview',
-      items: [{ id: 'dashboard', label: 'Main Dashboard', icon: LayoutDashboard, badge: null }],
-    },
-    {
-      heading: 'Operations',
-      items: [
-        { id: 'groups', label: 'Groups & Directory', icon: Users, badge: null },
-        { id: 'payments', label: 'Payments & Verification', icon: CreditCard, badge: null },
+  const navSections = isVerifier
+    ? [
         {
-          id: 'commitments',
-          label: 'Commitments & Countdowns',
-          icon: Clock,
-          badge: activeCountdownsCount > 0 ? activeCountdownsCount : null,
+          heading: 'Overview',
+          items: [{ id: 'dashboard', label: strings.nav.home, icon: LayoutDashboard, badge: null }],
         },
-        { id: 'expenses', label: 'Expenses & Treasury', icon: Receipt, badge: null },
-      ],
-    },
-    {
-      heading: 'Communication & Audit',
-      items: [
         {
-          id: 'communications',
-          label: 'Email Notices & Hub',
-          icon: Mail,
-          badge: communications.length > 0 ? communications.length : null,
+          heading: 'Group Operations',
+          items: [
+            { id: 'groups', label: strings.nav.groupMembers, icon: Users, badge: null },
+            {
+              id: 'payments',
+              label: strings.nav.checkPayments,
+              icon: CreditCard,
+              badge: pendingVerificationCount > 0 ? pendingVerificationCount : null,
+            },
+            {
+              id: 'commitments',
+              label: strings.nav.promisesDueDates,
+              icon: Clock,
+              badge: activeCountdownsCount > 0 ? activeCountdownsCount : null,
+            },
+            { id: 'expenses', label: strings.nav.groupExpenses, icon: Receipt, badge: null },
+          ],
         },
-        { id: 'reports', label: 'Financial Reports', icon: FileText, badge: null },
-        { id: 'disputes', label: 'Disputes & Inquiries', icon: AlertTriangle, badge: null },
         {
-          id: 'notifications',
-          label: 'Notification Centre',
-          icon: Bell,
-          badge: unreadCount > 0 ? unreadCount : null,
+          heading: 'Notices & Reports',
+          items: [
+            {
+              id: 'communications',
+              label: strings.nav.sendReminders,
+              icon: Mail,
+              badge: communications.length > 0 ? communications.length : null,
+            },
+            { id: 'reports', label: strings.nav.moneyReports, icon: FileText, badge: null },
+            { id: 'disputes', label: strings.nav.questionsIssues, icon: AlertTriangle, badge: null },
+            {
+              id: 'notifications',
+              label: strings.nav.notifications,
+              icon: Bell,
+              badge: unreadCount > 0 ? unreadCount : null,
+            },
+            { id: 'settings', label: strings.nav.settings, icon: Settings, badge: null },
+          ],
         },
-        { id: 'settings', label: 'Account & Audit Settings', icon: Settings, badge: null },
-      ],
-    },
-  ];
+      ]
+    : [
+        {
+          heading: 'Member Workspace',
+          items: [
+            { id: 'dashboard', label: strings.nav.home, icon: LayoutDashboard, badge: null },
+            { id: 'groups', label: strings.nav.myGroups, icon: Users, badge: null },
+            { id: 'payments', label: strings.nav.myPayments, icon: CreditCard, badge: null },
+            {
+              id: 'notifications',
+              label: strings.nav.notifications,
+              icon: Bell,
+              badge: unreadCount > 0 ? unreadCount : null,
+            },
+            { id: 'settings', label: strings.nav.settings, icon: Settings, badge: null },
+          ],
+        },
+      ];
 
-  const pageMeta = PAGE_METADATA[currentTab] || {
+  const pageMeta: Record<string, { title: string; subtitle: string }> = {
+    dashboard: {
+      title: isVerifier ? strings.nav.home : 'My Group Money',
+      subtitle: isVerifier
+        ? 'Collection progress, member balances, and verified treasury pulse'
+        : 'What you owe, what is verified, and group spending transparency',
+    },
+    groups: {
+      title: isVerifier ? strings.nav.groupMembers : strings.nav.myGroups,
+      subtitle: isVerifier
+        ? 'Manage members, invite links, join requests, and group settings'
+        : 'Your active groups and member directory',
+    },
+    payments: {
+      title: isVerifier ? strings.nav.checkPayments : strings.nav.myPayments,
+      subtitle: isVerifier
+        ? 'Check member receipts, verify inflows, and issue audited reversals'
+        : 'Your submitted payment proofs and verified receipts',
+    },
+    commitments: {
+      title: strings.nav.promisesDueDates,
+      subtitle: 'Track partial payment promises and upcoming balance deadlines',
+    },
+    expenses: {
+      title: strings.nav.groupExpenses,
+      subtitle: 'Track utilities, purchases, and how collected money was spent',
+    },
+    communications: {
+      title: strings.nav.sendReminders,
+      subtitle: 'Send private obligation notices, reminders, and announcements',
+    },
+    reports: {
+      title: strings.nav.moneyReports,
+      subtitle: 'Generate printable MWK statements and export CSV audit logs',
+    },
+    disputes: {
+      title: strings.nav.questionsIssues,
+      subtitle: 'Ask a question or report a balance mistake transparently',
+    },
+    notifications: {
+      title: strings.nav.notifications,
+      subtitle: 'System alerts, upcoming deadlines, and activity feed',
+    },
+    settings: {
+      title: strings.nav.settings,
+      subtitle: isGroupAdmin
+        ? 'Profile, language preferences, data integrity, and audit log'
+        : 'Your contact profile, language, and account preferences',
+    },
+  };
+
+  const activePageMeta = pageMeta[currentTab] || {
     title: currentTab.replace('_', ' '),
-    subtitle: 'UnitSpot financial workspace',
+    subtitle: 'UNIT SPOT financial workspace',
   };
 
   const selectTab = (tabId: string) => {
     setCurrentTab(tabId);
     setIsMobileMenuOpen(false);
+  };
+
+  const renderSyncLabel = () => {
+    if (syncStatus === 'syncing') {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-[11px] text-blue-600 dark:text-cyan-400 font-medium">
+          <RefreshCw className="w-3 h-3 animate-spin" />
+          {strings.sync.syncing}
+        </span>
+      );
+    }
+    if (syncStatus === 'offline_queued') {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-[11px] text-amber-700 dark:text-amber-400 font-medium">
+          <CloudOff className="w-3 h-3" />
+          {strings.sync.offlineQueued}
+        </span>
+      );
+    }
+    if (syncStatus === 'error') {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-[11px] text-rose-700 dark:text-rose-400 font-medium">
+          <AlertCircle className="w-3 h-3" />
+          {strings.sync.error}
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
+        <Cloud className="w-3 h-3" />
+        {strings.sync.synced}
+      </span>
+    );
   };
 
   return (
@@ -415,10 +476,10 @@ export default function App() {
             </button>
           </div>
 
-          {/* Group Switcher Dropdown */}
-          <div className="bg-slate-50 dark:bg-[#11192C] rounded-2xl p-2.5 border border-slate-200 dark:border-slate-800">
-            <div className="text-[10px] uppercase font-bold tracking-wider text-slate-500 dark:text-slate-400 mb-1.5 px-1">
-              Active Financial Circle
+          {/* Group Switcher + Join Code Action */}
+          <div className="bg-slate-50 dark:bg-[#11192C] rounded-2xl p-2.5 border border-slate-200 dark:border-slate-800 space-y-2">
+            <div className="text-[10px] uppercase font-bold tracking-wider text-slate-500 dark:text-slate-400 px-1">
+              Active Group
             </div>
             {activeGroups.length === 0 ? (
               <button
@@ -426,7 +487,7 @@ export default function App() {
                 onClick={() => selectTab('groups')}
                 className="w-full min-h-[40px] text-left bg-white dark:bg-[#0D1424] border border-dashed border-slate-300 dark:border-slate-700 rounded-xl px-2.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-cyan-400 transition-colors cursor-pointer"
               >
-                + Create First Group
+                + {strings.plain.createGroup}
               </button>
             ) : (
               <select
@@ -435,7 +496,7 @@ export default function App() {
                   const found = activeGroups.find((g) => g.id === e.target.value);
                   if (found) setCurrentGroup(found);
                 }}
-                aria-label="Select active financial group"
+                aria-label="Select active group"
                 className="w-full min-h-[40px] bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-700 rounded-xl px-2.5 py-1.5 text-xs font-semibold text-slate-900 dark:text-slate-100 focus:outline-none cursor-pointer"
               >
                 {activeGroups.map((g) => (
@@ -445,6 +506,15 @@ export default function App() {
                 ))}
               </select>
             )}
+
+            <button
+              type="button"
+              onClick={() => setIsJoinModalOpen(true)}
+              className="w-full min-h-[36px] flex items-center justify-center gap-1.5 text-[11px] font-semibold text-blue-700 dark:text-cyan-400 hover:bg-blue-50 dark:hover:bg-[#18233D] rounded-lg px-2 py-1 transition-colors cursor-pointer"
+            >
+              <KeyRound className="w-3 h-3 shrink-0" />
+              <span>Join with Invite Code</span>
+            </button>
           </div>
 
           {/* Grouped Navigation Links */}
@@ -480,7 +550,7 @@ export default function App() {
 
                       {item.badge !== null && (
                         <span
-                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full tabular-nums ${
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-md tabular-nums ${
                             isActive
                               ? 'bg-white/20 text-white'
                               : 'bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-200'
@@ -497,8 +567,10 @@ export default function App() {
           </nav>
         </div>
 
-        {/* Sidebar Footer Authenticated Admin Card */}
+        {/* Sidebar Footer Authenticated User Card + Sync Status */}
         <div className="pt-4 mt-4 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
+          <div className="px-2">{renderSyncLabel()}</div>
+
           <button
             type="button"
             onClick={() => selectTab('settings')}
@@ -521,7 +593,7 @@ export default function App() {
                 {currentUser.name}
               </div>
               <div className="text-[10px] text-slate-500 dark:text-slate-400 capitalize">
-                {currentUser.role.replace('_', ' ')}
+                {effectiveRole.replace('_', ' ')}
               </div>
             </div>
           </button>
@@ -539,7 +611,7 @@ export default function App() {
 
           <button
             type="button"
-            onClick={() => setViewMode('landing')}
+            onClick={returnToLanding}
             className="w-full min-h-[36px] text-left text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white text-[11px] font-medium px-2 py-1 flex items-center gap-1.5 transition-colors cursor-pointer"
           >
             <LogOut className="w-3.5 h-3.5" />
@@ -554,7 +626,7 @@ export default function App() {
           type="button"
           onClick={() => selectTab('dashboard')}
           className="text-left cursor-pointer"
-          aria-label="Go to Main Dashboard"
+          aria-label="Go to Home"
         >
           <UnitSpotLogo size="sm" />
         </button>
@@ -566,11 +638,13 @@ export default function App() {
             type="button"
             onClick={() => selectTab('notifications')}
             className="relative min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#131D33] cursor-pointer"
-            aria-label="Notifications"
+            aria-label={unreadCount > 0 ? `Notifications (${unreadCount} unread)` : 'Notifications'}
           >
             <Bell className="w-5 h-5" />
             {unreadCount > 0 && (
-              <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="ml-0.5 text-[10px] font-extrabold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                {unreadCount}
+              </span>
             )}
           </button>
 
@@ -612,9 +686,9 @@ export default function App() {
 
             <div className="p-4 overflow-y-auto flex-1 space-y-5">
               {/* Group Switcher inside mobile drawer */}
-              <div className="bg-slate-50 dark:bg-[#11192C] rounded-2xl p-3 border border-slate-200 dark:border-slate-800">
-                <div className="text-[10px] uppercase font-bold tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">
-                  Active Financial Circle
+              <div className="bg-slate-50 dark:bg-[#11192C] rounded-2xl p-3 border border-slate-200 dark:border-slate-800 space-y-2">
+                <div className="text-[10px] uppercase font-bold tracking-wider text-slate-500 dark:text-slate-400">
+                  Active Group
                 </div>
                 {activeGroups.length === 0 ? (
                   <button
@@ -622,7 +696,7 @@ export default function App() {
                     onClick={() => selectTab('groups')}
                     className="w-full min-h-[44px] text-left bg-white dark:bg-[#0D1424] border border-dashed border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer"
                   >
-                    + Create First Group
+                    + {strings.plain.createGroup}
                   </button>
                 ) : (
                   <select
@@ -631,7 +705,7 @@ export default function App() {
                       const found = activeGroups.find((g) => g.id === e.target.value);
                       if (found) setCurrentGroup(found);
                     }}
-                    aria-label="Select active financial group"
+                    aria-label="Select active group"
                     className="w-full min-h-[44px] bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 dark:text-slate-100"
                   >
                     {activeGroups.map((g) => (
@@ -641,6 +715,18 @@ export default function App() {
                     ))}
                   </select>
                 )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileMenuOpen(false);
+                    setIsJoinModalOpen(true);
+                  }}
+                  className="w-full min-h-[40px] flex items-center justify-center gap-1.5 text-xs font-semibold text-blue-700 dark:text-cyan-400 hover:bg-blue-50 dark:hover:bg-[#18233D] rounded-xl px-3 py-1.5 cursor-pointer"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>Join with Invite Code</span>
+                </button>
               </div>
 
               {navSections.map((section) => (
@@ -668,7 +754,7 @@ export default function App() {
                         </div>
                         {item.badge !== null && (
                           <span
-                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full tabular-nums ${
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded-md tabular-nums ${
                               isActive
                                 ? 'bg-white/20 text-white'
                                 : 'bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-200'
@@ -685,16 +771,22 @@ export default function App() {
             </div>
 
             <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-2 bg-slate-50/70 dark:bg-[#0D1424]">
+              <div className="flex items-center justify-between gap-2">
+                {renderSyncLabel()}
+                <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400">
+                  {effectiveRole.replace('_', ' ')}
+                </span>
+              </div>
               <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                Signed in as <span className="font-semibold text-slate-800 dark:text-slate-200">{currentUser.email}</span>
+                Signed in as{' '}
+                <span className="font-semibold text-slate-800 dark:text-slate-200">
+                  {currentUser.email}
+                </span>
               </div>
               <div className="flex items-center justify-between gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    setViewMode('landing');
-                    setIsMobileMenuOpen(false);
-                  }}
+                  onClick={returnToLanding}
                   className="min-h-[44px] px-3 rounded-xl text-xs text-slate-700 dark:text-slate-300 font-semibold hover:bg-slate-200/70 dark:hover:bg-slate-800 cursor-pointer"
                 >
                   Overview
@@ -718,7 +810,7 @@ export default function App() {
         <div className="no-print hidden md:flex min-h-[64px] border-b border-slate-200/80 dark:border-slate-800/80 bg-white/85 dark:bg-[#0B1120]/85 backdrop-blur-md px-6 lg:px-8 items-center justify-between gap-6 sticky top-0 z-30">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
-              <span>{pageMeta.title}</span>
+              <span>{activePageMeta.title}</span>
               {currentGroup && (
                 <>
                   <span className="text-slate-300 dark:text-slate-600" aria-hidden="true">
@@ -731,7 +823,7 @@ export default function App() {
               )}
             </div>
             <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-              {pageMeta.subtitle}
+              {activePageMeta.subtitle}
             </p>
           </div>
 
@@ -741,13 +833,15 @@ export default function App() {
             <button
               type="button"
               onClick={() => selectTab('notifications')}
-              className="relative min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white rounded-xl border border-slate-200 dark:border-slate-700/80 bg-white dark:bg-[#11192C] hover:bg-slate-50 dark:hover:bg-[#18233D] transition-colors cursor-pointer"
-              aria-label="View notifications"
+              className="relative min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white rounded-xl border border-slate-200 dark:border-slate-700/80 bg-white dark:bg-[#11192C] hover:bg-slate-50 dark:hover:bg-[#18233D] transition-colors cursor-pointer px-2.5 gap-1"
+              aria-label={unreadCount > 0 ? `View notifications (${unreadCount} unread)` : 'View notifications'}
               title="Notifications"
             >
               <Bell className="w-4 h-4" />
               {unreadCount > 0 && (
-                <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-emerald-500" />
+                <span className="text-[11px] font-extrabold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                  {unreadCount}
+                </span>
               )}
             </button>
 
@@ -757,7 +851,7 @@ export default function App() {
               className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-xs"
             >
               <CreditCard className="w-3.5 h-3.5 text-[#E5B93C] dark:text-white" />
-              Record Payment
+              <span>{isVerifier ? 'Record Payment' : strings.plain.submitPaymentProof}</span>
             </button>
           </div>
         </div>
@@ -785,15 +879,22 @@ export default function App() {
         {/* View Router */}
         <div className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
           <Suspense fallback={<ViewSkeleton />}>
-            {currentTab === 'dashboard' && (
-              <MainDashboardView
-                onOpenRecordPayment={handleOpenRecordPayment}
-                onOpenCreateCommitment={handleOpenCreateCommitment}
-                onOpenCreateContribution={() => setIsCreateContributionOpen(true)}
-                onOpenRecordExpense={() => setIsRecordExpenseOpen(true)}
-                onNavigateTab={(tab) => selectTab(tab)}
-              />
-            )}
+            {currentTab === 'dashboard' &&
+              (isVerifier ? (
+                <MainDashboardView
+                  onOpenRecordPayment={handleOpenRecordPayment}
+                  onOpenCreateCommitment={handleOpenCreateCommitment}
+                  onOpenCreateContribution={() => setIsCreateContributionOpen(true)}
+                  onOpenRecordExpense={() => setIsRecordExpenseOpen(true)}
+                  onNavigateTab={(tab) => selectTab(tab)}
+                />
+              ) : (
+                <MemberDashboardView
+                  onOpenRecordPayment={handleOpenRecordPayment}
+                  onOpenJoinGroup={() => setIsJoinModalOpen(true)}
+                  onNavigateTab={(tab) => selectTab(tab)}
+                />
+              ))}
 
             {currentTab === 'communications' && <EmailCommunicationsCenterView />}
 
@@ -812,7 +913,9 @@ export default function App() {
               <ExpenseManagementView onOpenRecordExpense={() => setIsRecordExpenseOpen(true)} />
             )}
 
-            {currentTab === 'groups' && <GroupManagementView />}
+            {currentTab === 'groups' && (
+              <GroupManagementView onOpenJoinGroup={() => setIsJoinModalOpen(true)} />
+            )}
 
             {currentTab === 'reports' && <FinancialReportingView />}
 
@@ -840,7 +943,7 @@ export default function App() {
           }`}
         >
           <LayoutDashboard className="w-4 h-4" />
-          <span>Home</span>
+          <span>{strings.nav.home}</span>
         </button>
 
         <button
@@ -860,7 +963,7 @@ export default function App() {
           type="button"
           onClick={() => handleOpenRecordPayment()}
           className="flex items-center justify-center -mt-4 bg-slate-900 dark:bg-blue-600 text-white w-12 h-12 rounded-2xl shadow-lg border border-slate-700/40 dark:border-blue-400/30 cursor-pointer"
-          aria-label="Record payment"
+          aria-label={isVerifier ? 'Record payment' : strings.plain.submitPaymentProof}
         >
           <CreditCard className="w-5 h-5 text-[#E5B93C] dark:text-white" />
         </button>
@@ -875,7 +978,7 @@ export default function App() {
           }`}
         >
           <Receipt className="w-4 h-4" />
-          <span>Ledger</span>
+          <span>{isVerifier ? 'Payments' : 'Receipts'}</span>
         </button>
 
         <button
@@ -885,13 +988,16 @@ export default function App() {
         >
           <MoreHorizontal className="w-4 h-4" />
           <span>More</span>
-          {activeCountdownsCount > 0 && (
-            <span className="absolute top-2 right-2.5 w-1.5 h-1.5 rounded-full bg-[#D5A52B]" />
-          )}
         </button>
       </nav>
 
-      {/* Global Modals (Code-split) */}
+      {/* Global Modals (Code-split + Join Modal) */}
+      <JoinGroupModal
+        isOpen={isJoinModalOpen}
+        onClose={() => setIsJoinModalOpen(false)}
+        defaultCode={pendingInviteCode}
+      />
+
       <Suspense fallback={null}>
         {isRecordPaymentOpen && (
           <RecordPaymentModal

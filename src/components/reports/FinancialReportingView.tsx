@@ -13,7 +13,9 @@ import {
   resolveMemberInfo,
   STOVE_TYPE_LABELS,
   isValidStoveType,
+  isAccommodationGroup,
 } from '../../utils/financialConfig';
+import { getGroupPreset } from '../../utils/groupPresets';
 import { Download, Printer, Building2 } from 'lucide-react';
 
 export const FinancialReportingView: React.FC = () => {
@@ -62,6 +64,9 @@ export const FinancialReportingView: React.FC = () => {
     totalApprovedExpenses
   );
 
+  const showStoveColumn = isAccommodationGroup(currentGroup);
+  const groupPreset = getGroupPreset(currentGroup.category);
+
   const handlePrint = () => {
     window.print();
   };
@@ -71,7 +76,7 @@ export const FinancialReportingView: React.FC = () => {
       'Member Name',
       'Email',
       'Phone',
-      'Stove Tier',
+      ...(showStoveColumn ? ['Stove Tier'] : []),
       'Assigned MWK',
       'Verified Paid MWK',
       'Outstanding MWK',
@@ -87,13 +92,13 @@ export const FinancialReportingView: React.FC = () => {
           ? STOVE_TYPE_LABELS[a.stoveTypeAtAssignment]
           : m?.stoveType && isValidStoveType(m.stoveType)
             ? STOVE_TYPE_LABELS[m.stoveType]
-            : 'Unclassified';
+            : 'Optional / Unset';
 
       return [
         `"${m?.name || 'Registered Member'}"`,
         `"${m?.email || ''}"`,
         `"${m?.phone || ''}"`,
-        `"${stoveLabel}"`,
+        ...(showStoveColumn ? [`"${stoveLabel}"`] : []),
         a.assignedAmount,
         paid,
         outstanding,
@@ -278,7 +283,7 @@ export const FinancialReportingView: React.FC = () => {
                       ? STOVE_TYPE_LABELS[a.stoveTypeAtAssignment]
                       : m?.stoveType && isValidStoveType(m.stoveType)
                         ? STOVE_TYPE_LABELS[m.stoveType]
-                        : 'Unclassified';
+                        : undefined;
 
                   return (
                     <div
@@ -291,7 +296,8 @@ export const FinancialReportingView: React.FC = () => {
                             {m?.name || 'Registered Member'}
                           </div>
                           <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                            {stove} {m?.phone ? `• ${m.phone}` : ''}
+                            {showStoveColumn ? stove || 'Standard' : m?.roomNumber || groupPreset.shortLabel}{' '}
+                            {m?.phone ? `• ${m.phone}` : ''}
                           </div>
                         </div>
                         <span
@@ -352,7 +358,7 @@ export const FinancialReportingView: React.FC = () => {
                   <thead className="bg-slate-100 dark:bg-[#11192C] print:bg-slate-100 text-slate-600 dark:text-slate-300 print:text-slate-700 uppercase tracking-wider text-[11px]">
                     <tr>
                       <th className="py-3 px-3">Member</th>
-                      <th className="py-3 px-3">Stove Tier</th>
+                      {showStoveColumn && <th className="py-3 px-3">Stove Tier</th>}
                       <th className="py-3 px-3">Expected (MWK)</th>
                       <th className="py-3 px-3">Verified Paid</th>
                       <th className="py-3 px-3">Outstanding</th>
@@ -373,7 +379,7 @@ export const FinancialReportingView: React.FC = () => {
                           ? STOVE_TYPE_LABELS[a.stoveTypeAtAssignment]
                           : m?.stoveType && isValidStoveType(m.stoveType)
                             ? STOVE_TYPE_LABELS[m.stoveType]
-                            : 'Unclassified';
+                            : 'Optional / Unset';
 
                       return (
                         <tr
@@ -390,9 +396,11 @@ export const FinancialReportingView: React.FC = () => {
                               </div>
                             )}
                           </td>
-                          <td className="py-2.5 px-3 text-slate-700 dark:text-slate-300 print:text-slate-800">
-                            {stove}
-                          </td>
+                          {showStoveColumn && (
+                            <td className="py-2.5 px-3 text-slate-700 dark:text-slate-300 print:text-slate-800">
+                              {stove}
+                            </td>
+                          )}
                           <td className="py-2.5 px-3 font-semibold text-slate-900 dark:text-slate-100 print:text-black">
                             {formatMWK(a.assignedAmount)}
                           </td>

@@ -1,6 +1,6 @@
 {
-  "name": "KLARENCY",
-  "description": "Shared Financial Management, Contribution Tracking and Accountability Platform with Malawi Kwacha (MWK) support, payment commitments, countdowns, and verification.",
+  "name": "UNIT SPOT",
+  "description": "Shared money. Clear records. No confusion. User-friendly MWK group contributions, expenses, payment proof verification, and accountability for shared houses, families, chilimba, churches, and teams in Malawi.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
