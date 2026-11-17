@@ -94,28 +94,46 @@ function dataUrlToBlob(dataUrl: string): Blob {
 }
 
 /**
- * Upload compressed receipt image to Firebase Storage when online & configured.
- * Returns { url, storagePath } if uploaded, or falls back cleanly to compressed dataUrl if Storage fails/offline.
+ * Upload compressed receipt image to Firebase Storage under a UID-scoped path when authenticated & online.
+ * Path: receipts/${groupId}/${uploaderUid}/${recordId}.jpg
+ * Attaches customMetadata (groupId, uploaderUid, adminId, treasurerId) so Storage rules restrict access.
  */
 export async function uploadReceiptImage(
   groupId: string,
   recordId: string,
   dataUrl: string,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  scopeMeta?: { uploaderUid?: string; adminId?: string; treasurerId?: string }
 ): Promise<{ url: string; storagePath?: string; uploadedToCloud: boolean }> {
   if (!dataUrl || !dataUrl.startsWith('data:image/')) {
     return { url: dataUrl, uploadedToCloud: false };
   }
 
+  const uploaderUid = auth.currentUser?.uid || scopeMeta?.uploaderUid;
+  if (!uploaderUid) {
+    return { url: dataUrl, uploadedToCloud: false };
+  }
+
+  const safeGroupId = groupId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeRecordId = recordId.replace(/[^a-zA-Z0-9_-]/g, '_');
+
   try {
     const blob = dataUrlToBlob(dataUrl);
-    const path = `receipts/${groupId}/${recordId}.jpg`;
+    const path = `receipts/${safeGroupId}/${uploaderUid}/${safeRecordId}.jpg`;
     const fileRef = storageRef(storage, path);
+
+    const customMetadata: Record<string, string> = {
+      groupId: safeGroupId,
+      uploaderUid,
+      ...(scopeMeta?.adminId ? { adminId: scopeMeta.adminId } : {}),
+      ...(scopeMeta?.treasurerId ? { treasurerId: scopeMeta.treasurerId } : {}),
+    };
 
     const downloadUrl = await Promise.race<string>([
       new Promise<string>((resolve, reject) => {
         const task = uploadBytesResumable(fileRef, blob, {
           contentType: blob.type || 'image/jpeg',
+          customMetadata,
         });
         task.on(
           'state_changed',

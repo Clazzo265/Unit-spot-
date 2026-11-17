@@ -243,7 +243,12 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
         currentGroup?.id || 'default',
         idempotencyKey,
         receiptImage,
-        (pct) => setUploadProgress(pct)
+        (pct) => setUploadProgress(pct),
+        {
+          uploaderUid: currentUser?.id,
+          adminId: currentGroup?.adminId,
+          treasurerId: currentGroup?.treasurerId,
+        }
       );
       finalReceiptUrl = uploaded.url;
       finalStoragePath = uploaded.storagePath;

@@ -26,22 +26,7 @@ import {
   GroupJoinPolicy,
   CloudSyncStatus,
 } from '../types';
-import {
-  INITIAL_USERS,
-  INITIAL_GROUPS,
-  INITIAL_GROUP_MEMBERS,
-  INITIAL_CONTRIBUTIONS,
-  INITIAL_ASSIGNMENTS,
-  INITIAL_PAYMENTS,
-  INITIAL_COMMITMENTS,
-  INITIAL_COMMITMENT_EVENTS,
-  INITIAL_EXPENSES,
-  INITIAL_DISPUTES,
-  INITIAL_NOTIFICATIONS,
-  INITIAL_AUDIT_LOGS,
-  INITIAL_COMMUNICATIONS,
-  DEFAULT_NOTIFICATION_CONFIG,
-} from '../data/initialData';
+import { DEFAULT_NOTIFICATION_CONFIG } from '../data/initialData';
 import {
   calculateVerifiedPaidForAssignment,
   calculatePendingPaidForAssignment,
@@ -79,6 +64,10 @@ import {
   stripDataUrlsFromExpenses,
   persistStorageWithFallback,
   mergeItemsById,
+  getAccountStorageKey,
+  purgeLegacyUnscopedStorage,
+  purgeAccountScopedStorage,
+  readUidScopedStorage,
 } from '../utils/storageUtils';
 import { AppLanguage, getLocaleStrings, LocaleDictionary } from '../utils/i18n';
 import {
@@ -105,12 +94,13 @@ import {
   doc,
   setDoc,
   getDoc,
-  updateDoc,
   onSnapshot,
   query,
   where,
   arrayUnion,
+  arrayRemove,
   increment,
+  writeBatch,
 } from 'firebase/firestore';
 
 export type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
@@ -119,6 +109,7 @@ interface AppContextType {
   currentUser: User | null;
   setCurrentUser: (user: User) => void;
   authStatus: AuthStatus;
+  isHydratingAccount: boolean;
   authError: string | null;
   clearAuthError: () => void;
   firebaseAuthUser: FirebaseUser | null;
@@ -281,36 +272,45 @@ interface AppContextType {
   clearAllData: () => void;
 }
 
-const STORAGE_KEY = 'unitspot_app_state_v4';
 const LANG_STORAGE_KEY = 'unitspot_lang';
-const PRE_REPAIR_SNAPSHOT_KEY = 'klarency_pre_repair_snapshot_v1';
-const SUPER_ADMIN_EMAIL = 'cchilongo88@gmail.com';
 
 const AppContext = createContext<AppContextType | null>(null);
 
-function safeParseStorage<T>(key: string, fallback: T): T {
-  try {
-    const saved = localStorage.getItem(key);
-    if (!saved) return fallback;
-    return JSON.parse(saved) as T;
-  } catch {
-    return fallback;
-  }
+function replaceGroupScopedItems<T extends { groupId: string }>(
+  prev: T[],
+  groupId: string,
+  incoming: T[],
+  sortCompare?: (a: T, b: T) => number
+): T[] {
+  const otherGroups = prev.filter((item) => item.groupId !== groupId);
+  const next = [...otherGroups, ...incoming];
+  if (sortCompare) next.sort(sortCompare);
+  return next;
 }
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [firebaseAuthUser, setFirebaseAuthUser] = useState<FirebaseUser | null>(null);
   const [isFirebaseReady, setIsFirebaseReady] = useState(false);
   const [authStatus, setAuthStatus] = useState<AuthStatus>('loading');
+  const [isHydratingAccount, setIsHydratingAccount] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>(() =>
     typeof navigator !== 'undefined' && !navigator.onLine ? 'offline_queued' : 'synced'
   );
   const [language, setLanguageState] = useState<AppLanguage>(() => {
-    const saved = localStorage.getItem(LANG_STORAGE_KEY);
-    return saved === 'ny' ? 'ny' : 'en';
+    try {
+      const saved = localStorage.getItem(LANG_STORAGE_KEY);
+      return saved === 'ny' ? 'ny' : 'en';
+    } catch {
+      return 'en';
+    }
   });
+  const languageRef = useRef<AppLanguage>(language);
+  useEffect(() => {
+    languageRef.current = language;
+  }, [language]);
+
   const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     return extractInviteCodeFromUrl(window.location.href);
@@ -327,74 +327,78 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const strings = getLocaleStrings(language);
 
-  const [users, setUsers] = useState<User[]>(() =>
-    safeParseStorage<User[]>(`${STORAGE_KEY}_users`, INITIAL_USERS)
-  );
+  // Security isolation invariant: initialize all account/financial state strictly empty on boot.
+  // Data hydrates ONLY after Firebase Auth confirms an authenticated UID.
+  const activeUidRef = useRef<string | null>(null);
+  const [users, setUsers] = useState<User[]>([]);
   const usersRef = useRef<User[]>(users);
   useEffect(() => {
     usersRef.current = users;
   }, [users]);
 
   const [currentUser, setCurrentUserState] = useState<User | null>(null);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [currentGroup, setCurrentGroupState] = useState<Group | null>(null);
+  const setCurrentGroup = useCallback((group: Group | null) => {
+    setCurrentGroupState(group);
+  }, []);
 
-  const [groups, setGroups] = useState<Group[]>(() =>
-    safeParseStorage<Group[]>(`${STORAGE_KEY}_groups`, INITIAL_GROUPS)
-  );
+  const [groupMembers, setGroupMembers] = useState<GroupMember[]>([]);
+  const groupMembersRef = useRef<GroupMember[]>(groupMembers);
+  useEffect(() => {
+    groupMembersRef.current = groupMembers;
+  }, [groupMembers]);
 
-  const [currentGroup, setCurrentGroup] = useState<Group | null>(() => {
-    const saved = safeParseStorage<Group | null>(`${STORAGE_KEY}_currentGroup`, null);
-    if (saved) return saved;
-    const savedGroups = safeParseStorage<Group[]>(`${STORAGE_KEY}_groups`, INITIAL_GROUPS);
-    return savedGroups.find((g) => g.status !== 'archived') || savedGroups[0] || null;
-  });
-
-  const [groupMembers, setGroupMembers] = useState<GroupMember[]>(() =>
-    safeParseStorage<GroupMember[]>(`${STORAGE_KEY}_groupMembers`, INITIAL_GROUP_MEMBERS)
-  );
-  const [contributions, setContributions] = useState<Contribution[]>(() =>
-    safeParseStorage<Contribution[]>(`${STORAGE_KEY}_contributions`, INITIAL_CONTRIBUTIONS)
-  );
-  const [assignments, setAssignments] = useState<ContributionAssignment[]>(() =>
-    safeParseStorage<ContributionAssignment[]>(`${STORAGE_KEY}_assignments`, INITIAL_ASSIGNMENTS)
-  );
-  const [payments, setPayments] = useState<Payment[]>(() =>
-    safeParseStorage<Payment[]>(`${STORAGE_KEY}_payments`, INITIAL_PAYMENTS)
-  );
-  const [commitments, setCommitments] = useState<PaymentCommitment[]>(() =>
-    safeParseStorage<PaymentCommitment[]>(`${STORAGE_KEY}_commitments`, INITIAL_COMMITMENTS)
-  );
-  const [commitmentEvents, setCommitmentEvents] = useState<CommitmentEvent[]>(() =>
-    safeParseStorage<CommitmentEvent[]>(`${STORAGE_KEY}_commitmentEvents`, INITIAL_COMMITMENT_EVENTS)
-  );
-  const [expenses, setExpenses] = useState<Expense[]>(() =>
-    safeParseStorage<Expense[]>(`${STORAGE_KEY}_expenses`, INITIAL_EXPENSES)
-  );
-  const [disputes, setDisputes] = useState<Dispute[]>(() =>
-    safeParseStorage<Dispute[]>(`${STORAGE_KEY}_disputes`, INITIAL_DISPUTES)
-  );
+  const [contributions, setContributions] = useState<Contribution[]>([]);
+  const [assignments, setAssignments] = useState<ContributionAssignment[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [commitments, setCommitments] = useState<PaymentCommitment[]>([]);
+  const [commitmentEvents, setCommitmentEvents] = useState<CommitmentEvent[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [disputes, setDisputes] = useState<Dispute[]>([]);
   const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
-  const [notifications, setNotifications] = useState<AppNotification[]>(() =>
-    safeParseStorage<AppNotification[]>(`${STORAGE_KEY}_notifications`, INITIAL_NOTIFICATIONS)
-  );
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() =>
-    safeParseStorage<AuditLog[]>(`${STORAGE_KEY}_auditLogs`, INITIAL_AUDIT_LOGS)
-  );
-  const [communications, setCommunications] = useState<EmailCommunication[]>(() =>
-    safeParseStorage<EmailCommunication[]>(`${STORAGE_KEY}_communications`, INITIAL_COMMUNICATIONS)
-  );
-  const [notificationConfig, setNotificationConfig] = useState<NotificationScheduleConfig>(() =>
-    safeParseStorage<NotificationScheduleConfig>(
-      `${STORAGE_KEY}_notificationConfig`,
-      DEFAULT_NOTIFICATION_CONFIG
-    )
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [communications, setCommunications] = useState<EmailCommunication[]>([]);
+  const [notificationConfig, setNotificationConfig] = useState<NotificationScheduleConfig>(
+    DEFAULT_NOTIFICATION_CONFIG
   );
 
   const [integrityReport, setIntegrityReport] = useState<IntegrityReport | null>(null);
-  const [hasPreRepairSnapshot, setHasPreRepairSnapshot] = useState<boolean>(() =>
-    Boolean(localStorage.getItem(PRE_REPAIR_SNAPSHOT_KEY))
-  );
+  const [hasPreRepairSnapshot, setHasPreRepairSnapshot] = useState<boolean>(false);
 
-  const isEmailVerified = firebaseAuthUser ? Boolean(firebaseAuthUser.emailVerified) : true;
+  const resetInMemoryState = useCallback(() => {
+    setUsers([]);
+    setGroups([]);
+    setCurrentGroupState(null);
+    setGroupMembers([]);
+    setContributions([]);
+    setAssignments([]);
+    setPayments([]);
+    setCommitments([]);
+    setCommitmentEvents([]);
+    setExpenses([]);
+    setDisputes([]);
+    setJoinRequests([]);
+    setNotifications([]);
+    setAuditLogs([]);
+    setCommunications([]);
+    setNotificationConfig(DEFAULT_NOTIFICATION_CONFIG);
+    setIntegrityReport(null);
+    setHasPreRepairSnapshot(false);
+    setActionError(null);
+  }, []);
+
+  // Purge any legacy unscoped financial localStorage keys immediately on mount
+  useEffect(() => {
+    try {
+      purgeLegacyUnscopedStorage(localStorage);
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
+  const isEmailVerified = firebaseAuthUser ? Boolean(firebaseAuthUser.emailVerified) : false;
 
   const effectiveRole: EffectiveGroupRole = getEffectiveGroupRole(
     currentUser,
@@ -412,12 +416,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const getRoleForGroupId = useCallback(
     (targetGroupId?: string): EffectiveGroupRole => {
       if (!currentUser) return 'member';
-      if (currentUser.role === 'super_admin') return 'super_admin';
       const target =
         groups.find((g) => g.id === targetGroupId) || currentGroup || undefined;
       return getEffectiveGroupRole(currentUser, target, groupMembers);
     },
     [currentUser, groups, currentGroup, groupMembers]
+  );
+
+  const resolveMemberUid = useCallback(
+    (memberId: string | undefined, targetGroupId?: string): string | undefined => {
+      if (!memberId) return undefined;
+      const scoped = groupMembersRef.current.find(
+        (m) =>
+          (!targetGroupId || m.groupId === targetGroupId) &&
+          (m.id === memberId || m.userId === memberId || m.linkedUserId === memberId)
+      );
+      if (scoped?.linkedUserId) return scoped.linkedUserId;
+      if (scoped?.userId && !scoped.userId.startsWith('mem_')) return scoped.userId;
+      if (!memberId.startsWith('mem_')) return memberId;
+      return undefined;
+    },
+    []
   );
 
   // Track browser online/offline changes honestly
@@ -456,7 +475,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       data: Record<string, unknown>,
       op: OperationType = OperationType.WRITE
     ): Promise<void> => {
-      if (!firebaseAuthUser) return;
+      const expectedUid = firebaseAuthUser?.uid;
+      if (!expectedUid || activeUidRef.current !== expectedUid) return;
       if (typeof navigator !== 'undefined' && !navigator.onLine) {
         setSyncStatus('offline_queued');
         return;
@@ -464,8 +484,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setSyncStatus('syncing');
       try {
         await setDoc(doc(db, path, docId), sanitizeForFirestore(data), { merge: true });
-        setSyncStatus('synced');
+        if (activeUidRef.current === expectedUid) {
+          setSyncStatus('synced');
+        }
       } catch (err) {
+        if (activeUidRef.current !== expectedUid) return;
         setSyncStatus(typeof navigator !== 'undefined' && !navigator.onLine ? 'offline_queued' : 'error');
         try {
           handleFirestoreError(err, op, `${path}/${docId}`);
@@ -478,293 +501,495 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [firebaseAuthUser]
   );
 
-  // Automatic one-time non-destructive historical integrity scan on boot
-  useEffect(() => {
-    const hasAnyRecords =
-      groupMembers.length > 0 ||
-      contributions.length > 0 ||
-      assignments.length > 0 ||
-      payments.length > 0 ||
-      commitments.length > 0 ||
-      expenses.length > 0;
-
-    if (!hasAnyRecords) return;
-
-    const scanResult = auditAndRepairFinancialData({
-      groups,
-      groupMembers,
-      contributions,
-      assignments,
-      payments,
-      commitments,
-      expenses,
-    });
-
-    setIntegrityReport(scanResult.report);
-
-    if (scanResult.report.repairedCount > 0) {
-      if (!localStorage.getItem(PRE_REPAIR_SNAPSHOT_KEY)) {
-        try {
-          localStorage.setItem(
-            PRE_REPAIR_SNAPSHOT_KEY,
-            JSON.stringify({
-              savedAt: new Date().toISOString(),
-              groupMembers,
-              contributions,
-              assignments,
-              payments,
-              commitments,
-              expenses,
-            })
-          );
-          setHasPreRepairSnapshot(true);
-        } catch {
-          // ignore storage quota issue
-        }
-      }
-
-      setGroupMembers(scanResult.groupMembers);
-      setContributions(scanResult.contributions);
-      setAssignments(scanResult.assignments);
-      setPayments(scanResult.payments);
-      setCommitments(scanResult.commitments);
-      setExpenses(scanResult.expenses);
-    } else if (scanResult.report.flaggedCount > 0) {
-      setGroupMembers(scanResult.groupMembers);
-    }
-    // Run once on initial mount
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Test connection & listen to Firebase Auth
+  // Listen to Firebase Auth with strict synchronous UID-isolation & foreign-cache purging
   useEffect(() => {
     testFirestoreConnection();
 
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      try {
+        purgeLegacyUnscopedStorage(localStorage);
+      } catch {
+        // ignore storage errors
+      }
+
+      if (!fbUser) {
+        activeUidRef.current = null;
+        resetInMemoryState();
+        try {
+          purgeAccountScopedStorage(localStorage);
+        } catch {
+          // ignore storage errors
+        }
+        setFirebaseAuthUser(null);
+        setCurrentUserState(null);
+        setAuthStatus('unauthenticated');
+        setIsHydratingAccount(false);
+        setIsFirebaseReady(true);
+        return;
+      }
+
+      const uid = fbUser.uid;
+      const uidChanged = activeUidRef.current !== uid;
+
+      if (uidChanged) {
+        resetInMemoryState();
+        try {
+          purgeAccountScopedStorage(localStorage, { preserveUid: uid });
+        } catch {
+          // ignore storage errors
+        }
+        activeUidRef.current = uid;
+        setIsHydratingAccount(Boolean(fbUser.emailVerified));
+
+        if (fbUser.emailVerified) {
+          const cachedGroups = readUidScopedStorage<Group[]>(localStorage, uid, 'groups', []);
+          const cachedCurrentGroup = readUidScopedStorage<Group | null>(
+            localStorage,
+            uid,
+            'currentGroup',
+            null
+          );
+          if (cachedGroups.length > 0) {
+            setGroups(cachedGroups);
+            setCurrentGroupState(
+              cachedCurrentGroup && cachedGroups.some((g) => g.id === cachedCurrentGroup.id)
+                ? cachedCurrentGroup
+                : cachedGroups.find((g) => g.status !== 'archived') || cachedGroups[0] || null
+            );
+          }
+          setGroupMembers(readUidScopedStorage<GroupMember[]>(localStorage, uid, 'groupMembers', []));
+          setContributions(readUidScopedStorage<Contribution[]>(localStorage, uid, 'contributions', []));
+          setAssignments(readUidScopedStorage<ContributionAssignment[]>(localStorage, uid, 'assignments', []));
+          setPayments(readUidScopedStorage<Payment[]>(localStorage, uid, 'payments', []));
+          setCommitments(readUidScopedStorage<PaymentCommitment[]>(localStorage, uid, 'commitments', []));
+          setCommitmentEvents(readUidScopedStorage<CommitmentEvent[]>(localStorage, uid, 'commitmentEvents', []));
+          setExpenses(readUidScopedStorage<Expense[]>(localStorage, uid, 'expenses', []));
+          setDisputes(readUidScopedStorage<Dispute[]>(localStorage, uid, 'disputes', []));
+          setJoinRequests(readUidScopedStorage<JoinRequest[]>(localStorage, uid, 'joinRequests', []));
+          setNotifications(readUidScopedStorage<AppNotification[]>(localStorage, uid, 'notifications', []));
+          setAuditLogs(readUidScopedStorage<AuditLog[]>(localStorage, uid, 'auditLogs', []));
+          setCommunications(readUidScopedStorage<EmailCommunication[]>(localStorage, uid, 'communications', []));
+          setNotificationConfig(
+            readUidScopedStorage<NotificationScheduleConfig>(
+              localStorage,
+              uid,
+              'notificationConfig',
+              DEFAULT_NOTIFICATION_CONFIG
+            )
+          );
+          try {
+            setHasPreRepairSnapshot(
+              Boolean(localStorage.getItem(getAccountStorageKey(uid, 'pre_repair_snapshot')))
+            );
+          } catch {
+            setHasPreRepairSnapshot(false);
+          }
+        }
+      }
+
       setFirebaseAuthUser(fbUser);
       setIsFirebaseReady(true);
 
-      if (fbUser) {
-        const isVerifiedSuperAdmin =
-          fbUser.email?.toLowerCase() === SUPER_ADMIN_EMAIL && fbUser.emailVerified === true;
+      const fallbackUser: User = {
+        id: uid,
+        name: fbUser.displayName || fbUser.email?.split('@')[0] || 'User',
+        email: fbUser.email || '',
+        phone: fbUser.phoneNumber || undefined,
+        role: 'group_admin',
+        avatarUrl: fbUser.photoURL || undefined,
+        preferredLanguage: languageRef.current,
+        createdAt: new Date().toISOString(),
+      };
 
-        const mappedUser: User = {
-          id: fbUser.uid,
-          name: fbUser.displayName || fbUser.email?.split('@')[0] || 'User',
-          email: fbUser.email || '',
-          phone: fbUser.phoneNumber || undefined,
-          role: isVerifiedSuperAdmin ? 'super_admin' : 'group_admin',
-          avatarUrl: fbUser.photoURL || undefined,
-          preferredLanguage: language,
-          createdAt: new Date().toISOString(),
-        };
+      setCurrentUserState(fallbackUser);
+      setAuthStatus('authenticated');
+      setUsers([fallbackUser]);
 
-        setCurrentUserState(mappedUser);
-        setAuthStatus('authenticated');
-        setUsers((prev) => {
-          const exists = prev.some((u) => u.id === mappedUser.id);
-          return exists
-            ? prev.map((u) => (u.id === mappedUser.id ? { ...u, ...mappedUser } : u))
-            : [mappedUser, ...prev];
-        });
+      if (fbUser.emailVerified) {
+        try {
+          const userRef = doc(db, 'users', uid);
+          const userSnap = await getDoc(userRef);
+          if (activeUidRef.current !== uid) return;
 
-        if (fbUser.emailVerified) {
-          try {
+          if (userSnap.exists()) {
+            const existingUser = userSnap.data() as User;
+            const resolvedUser: User = {
+              ...fallbackUser,
+              ...existingUser,
+              id: uid,
+              email: fbUser.email || existingUser.email || '',
+              avatarUrl: fbUser.photoURL || existingUser.avatarUrl,
+              createdAt: existingUser.createdAt || fallbackUser.createdAt,
+            };
+            setCurrentUserState(resolvedUser);
+            setUsers([resolvedUser]);
+            // Update only mutable auth metadata if needed without touching immutable role/createdAt
+            if (
+              existingUser.email !== resolvedUser.email ||
+              (resolvedUser.avatarUrl && existingUser.avatarUrl !== resolvedUser.avatarUrl)
+            ) {
+              await setDoc(
+                userRef,
+                sanitizeForFirestore({
+                  email: resolvedUser.email,
+                  avatarUrl: resolvedUser.avatarUrl,
+                }),
+                { merge: true }
+              );
+            }
+          } else {
             await setDoc(
-              doc(db, 'users', fbUser.uid),
-              sanitizeForFirestore(mappedUser as unknown as Record<string, unknown>),
-              { merge: true }
+              userRef,
+              sanitizeForFirestore(fallbackUser as unknown as Record<string, unknown>)
             );
-          } catch (err) {
-            console.warn('Could not sync user to Firestore:', err);
           }
+        } catch (err) {
+          console.warn('Could not sync user profile to Firestore:', err);
         }
       } else {
-        setCurrentUserState(null);
-        setAuthStatus('unauthenticated');
+        setIsHydratingAccount(false);
       }
     });
 
     return () => unsubscribe();
-  }, [language]);
+  }, [resetInMemoryState]);
 
-  // Listen to authenticated user's groups (admin, treasurer, and memberUids)
+  // Listen ONLY to authenticated user's own groups (adminId, treasurerId, memberUids) & own notifications
   useEffect(() => {
-    if (!firebaseAuthUser) return;
+    const uid = firebaseAuthUser?.uid;
+    if (!uid || !firebaseAuthUser.emailVerified) {
+      setIsHydratingAccount(false);
+      return;
+    }
 
-    const isVerifiedSuperAdmin =
-      firebaseAuthUser.email?.toLowerCase() === SUPER_ADMIN_EMAIL &&
-      firebaseAuthUser.emailVerified === true;
+    const adminMap = new Map<string, Group>();
+    const treasurerMap = new Map<string, Group>();
+    const memberMap = new Map<string, Group>();
+    const settled = { admin: false, treasurer: false, member: false };
 
-    const handleGroupSnapshot = (remoteGroups: Group[]) => {
-      if (remoteGroups.length === 0) return;
-      setGroups((prev) => mergeItemsById(prev, remoteGroups));
-      setCurrentGroup((prev) => {
-        if (!prev) return remoteGroups.find((g) => g.status !== 'archived') || remoteGroups[0] || null;
-        const refreshed = remoteGroups.find((g) => g.id === prev.id);
-        return refreshed || prev;
+    const safetyTimeout = setTimeout(() => {
+      if (activeUidRef.current === uid) {
+        setIsHydratingAccount(false);
+      }
+    }, 4500);
+
+    const reconcileGroups = () => {
+      if (activeUidRef.current !== uid) return;
+      const combined = new Map<string, Group>();
+      [adminMap, treasurerMap, memberMap].forEach((m) => {
+        m.forEach((g, id) => combined.set(id, g));
       });
+      const nextGroups = Array.from(combined.values()).sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      );
+
+      setGroups(nextGroups);
+      setCurrentGroupState((prev) => {
+        if (prev) {
+          const match = nextGroups.find((g) => g.id === prev.id);
+          if (match) return match;
+        }
+        return nextGroups.find((g) => g.status !== 'archived') || nextGroups[0] || null;
+      });
+
+      const validGroupIds = new Set(nextGroups.map((g) => g.id));
+      setGroupMembers((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
+      setContributions((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
+      setAssignments((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
+      setPayments((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
+      setCommitments((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
+      setExpenses((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
+      setDisputes((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
+      setJoinRequests((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
+      setAuditLogs((prev) =>
+        prev.filter((item) => item.groupId && validGroupIds.has(item.groupId))
+      );
+      setCommunications((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
+
       setSyncStatus('synced');
+      if (settled.admin && settled.treasurer && settled.member) {
+        clearTimeout(safetyTimeout);
+        setIsHydratingAccount(false);
+      }
     };
 
     const unsubs: (() => void)[] = [];
 
-    if (isVerifiedSuperAdmin) {
+    const bindGroupQuery = (
+      q: ReturnType<typeof query>,
+      targetMap: Map<string, Group>,
+      key: keyof typeof settled
+    ) => {
       unsubs.push(
         onSnapshot(
-          collection(db, 'groups'),
+          q,
           (snapshot) => {
-            const remoteGroups: Group[] = [];
-            snapshot.forEach((docSnap) => remoteGroups.push(docSnap.data() as Group));
-            handleGroupSnapshot(remoteGroups);
+            if (activeUidRef.current !== uid) return;
+            targetMap.clear();
+            snapshot.forEach((docSnap) => {
+              const g = docSnap.data() as Group;
+              if (g?.id) targetMap.set(g.id, g);
+            });
+            settled[key] = true;
+            reconcileGroups();
           },
-          (err) => console.warn('Groups snapshot error:', err)
+          (err) => {
+            console.warn(`Groups ${key} query error:`, err);
+            settled[key] = true;
+            reconcileGroups();
+          }
         )
       );
-    } else {
-      const adminQuery = query(collection(db, 'groups'), where('adminId', '==', firebaseAuthUser.uid));
-      const memberQuery = query(
-        collection(db, 'groups'),
-        where('memberUids', 'array-contains', firebaseAuthUser.uid)
-      );
+    };
 
-      [adminQuery, memberQuery].forEach((q) => {
-        unsubs.push(
-          onSnapshot(
-            q,
-            (snapshot) => {
-              const remoteGroups: Group[] = [];
-              snapshot.forEach((docSnap) => remoteGroups.push(docSnap.data() as Group));
-              handleGroupSnapshot(remoteGroups);
-            },
-            (err) => console.warn('Groups query error:', err)
-          )
-        );
-      });
-    }
+    bindGroupQuery(
+      query(collection(db, 'groups'), where('adminId', '==', uid)),
+      adminMap,
+      'admin'
+    );
+    bindGroupQuery(
+      query(collection(db, 'groups'), where('treasurerId', '==', uid)),
+      treasurerMap,
+      'treasurer'
+    );
+    bindGroupQuery(
+      query(collection(db, 'groups'), where('memberUids', 'array-contains', uid)),
+      memberMap,
+      'member'
+    );
 
-    const notificationsRef = collection(db, `users/${firebaseAuthUser.uid}/notifications`);
+    const notificationsRef = collection(db, `users/${uid}/notifications`);
     const unsubNotifications = onSnapshot(
       notificationsRef,
       (snapshot) => {
-        if (!snapshot.empty) {
-          const remoteNotifs: AppNotification[] = [];
-          snapshot.forEach((docSnap) => {
-            remoteNotifs.push(docSnap.data() as AppNotification);
-          });
-          setNotifications((prev) =>
-            mergeItemsById(
-              prev,
-              remoteNotifs,
-              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-            )
-          );
-        }
+        if (activeUidRef.current !== uid) return;
+        const remoteNotifs: AppNotification[] = [];
+        snapshot.forEach((docSnap) => {
+          remoteNotifs.push(docSnap.data() as AppNotification);
+        });
+        remoteNotifs.sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+        setNotifications(remoteNotifs);
       },
       (err) => console.warn('Notifications snapshot error:', err)
     );
 
     return () => {
+      clearTimeout(safetyTimeout);
       unsubs.forEach((u) => u());
       unsubNotifications();
     };
-  }, [firebaseAuthUser]);
+  }, [firebaseAuthUser?.uid, firebaseAuthUser?.emailVerified]);
 
-  // Listen to active group subcollections
+  const isManagerInCurrentGroup = Boolean(
+    currentGroup &&
+      firebaseAuthUser?.uid &&
+      (currentGroup.adminId === firebaseAuthUser.uid ||
+        currentGroup.treasurerId === firebaseAuthUser.uid ||
+        groupMembers.some(
+          (m) =>
+            m.groupId === currentGroup.id &&
+            m.status === 'active' &&
+            (m.userId === firebaseAuthUser.uid ||
+              m.linkedUserId === firebaseAuthUser.uid ||
+              m.id === firebaseAuthUser.uid) &&
+            (m.roleInGroup === 'admin' || m.roleInGroup === 'treasurer')
+        ))
+  );
+
+  // Listen to active group subcollections with strict role & UID scoping
   useEffect(() => {
-    if (!currentGroup?.id || !firebaseAuthUser) return;
+    const uid = firebaseAuthUser?.uid;
+    const groupId = currentGroup?.id;
+    if (!groupId || !uid || !firebaseAuthUser.emailVerified) return;
 
-    const groupId = currentGroup.id;
     const unsubscribers: (() => void)[] = [];
 
-    const mergeById = <T extends { id: string }>(prev: T[], incoming: T[]): T[] => {
-      const merged = [...prev];
-      incoming.forEach((item) => {
-        const idx = merged.findIndex((p) => p.id === item.id);
-        if (idx >= 0) merged[idx] = item;
-        else merged.push(item);
-      });
-      return merged;
+    const bindCollection = <T extends { id: string; groupId: string }>(
+      path: string,
+      apply: (items: T[]) => void
+    ) => {
+      const unsub = onSnapshot(
+        collection(db, path),
+        (snapshot) => {
+          if (activeUidRef.current !== uid) return;
+          const items: T[] = [];
+          snapshot.forEach((docSnap) => items.push(docSnap.data() as T));
+          apply(items);
+        },
+        (err) => console.warn(`${path} snapshot error:`, err)
+      );
+      unsubscribers.push(unsub);
+    };
+
+    const bindMemberDualScoped = <T extends { id: string; groupId: string }>(
+      subcollection: string,
+      applyMerged: (items: T[]) => void
+    ) => {
+      const byUidMap = new Map<string, T>();
+      const byMemberIdMap = new Map<string, T>();
+
+      const flush = () => {
+        if (activeUidRef.current !== uid) return;
+        const merged = new Map<string, T>();
+        byUidMap.forEach((item, id) => merged.set(id, item));
+        byMemberIdMap.forEach((item, id) => merged.set(id, item));
+        applyMerged(Array.from(merged.values()));
+      };
+
+      const qByUid = query(
+        collection(db, `groups/${groupId}/${subcollection}`),
+        where('memberUid', '==', uid)
+      );
+      const qByMemberId = query(
+        collection(db, `groups/${groupId}/${subcollection}`),
+        where('memberId', '==', uid)
+      );
+
+      unsubscribers.push(
+        onSnapshot(
+          qByUid,
+          (snapshot) => {
+            byUidMap.clear();
+            snapshot.forEach((d) => {
+              const docData = d.data() as T;
+              if (docData?.id) byUidMap.set(docData.id, docData);
+            });
+            flush();
+          },
+          (err) => console.warn(`groups/${groupId}/${subcollection} (memberUid) snapshot error:`, err)
+        ),
+        onSnapshot(
+          qByMemberId,
+          (snapshot) => {
+            byMemberIdMap.clear();
+            snapshot.forEach((d) => {
+              const docData = d.data() as T;
+              if (docData?.id) byMemberIdMap.set(docData.id, docData);
+            });
+            flush();
+          },
+          (err) => console.warn(`groups/${groupId}/${subcollection} (memberId) snapshot error:`, err)
+        )
+      );
     };
 
     try {
-      const listeners: Array<{
-        path: string;
-        onData: (docs: any[]) => void;
-      }> = [
-        {
-          path: `groups/${groupId}/members`,
-          onData: (docs) =>
-            setGroupMembers((prev) =>
-              mergeGroupMembersWithFallback(prev, docs as GroupMember[], usersRef.current)
-            ),
-        },
-        {
-          path: `groups/${groupId}/contributions`,
-          onData: (docs) => setContributions((prev) => mergeById(prev, docs as Contribution[])),
-        },
-        {
-          path: `groups/${groupId}/assignments`,
-          onData: (docs) => setAssignments((prev) => mergeById(prev, docs as ContributionAssignment[])),
-        },
-        {
-          path: `groups/${groupId}/payments`,
-          onData: (docs) => setPayments((prev) => mergeById(prev, docs as Payment[])),
-        },
-        {
-          path: `groups/${groupId}/commitments`,
-          onData: (docs) => setCommitments((prev) => mergeById(prev, docs as PaymentCommitment[])),
-        },
-        {
-          path: `groups/${groupId}/commitmentEvents`,
-          onData: (docs) => setCommitmentEvents((prev) => mergeById(prev, docs as CommitmentEvent[])),
-        },
-        {
-          path: `groups/${groupId}/expenses`,
-          onData: (docs) => setExpenses((prev) => mergeById(prev, docs as Expense[])),
-        },
-        {
-          path: `groups/${groupId}/disputes`,
-          onData: (docs) => setDisputes((prev) => mergeById(prev, docs as Dispute[])),
-        },
-        {
-          path: `groups/${groupId}/joinRequests`,
-          onData: (docs) => setJoinRequests((prev) => mergeById(prev, docs as JoinRequest[])),
-        },
-        {
-          path: `groups/${groupId}/auditLogs`,
-          onData: (docs) =>
-            setAuditLogs((prev) =>
-              mergeById(prev, docs as AuditLog[]).sort(
-                (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-              )
-            ),
-        },
-        {
-          path: `groups/${groupId}/communications`,
-          onData: (docs) =>
-            setCommunications((prev) =>
-              mergeById(prev, docs as EmailCommunication[]).sort(
-                (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime()
-              )
-            ),
-        },
-      ];
-
-      listeners.forEach(({ path, onData }) => {
-        const unsub = onSnapshot(
-          collection(db, path),
-          (snapshot) => {
-            if (!snapshot.empty) {
-              const items: any[] = [];
-              snapshot.forEach((docSnap) => items.push(docSnap.data()));
-              onData(items);
-            }
-          },
-          (err) => console.warn(`${path} snapshot error:`, err)
-        );
-        unsubscribers.push(unsub);
+      // Group directory & group-wide shared targets/expenses (accessible to active group members)
+      bindCollection<GroupMember>(`groups/${groupId}/members`, (items) => {
+        setGroupMembers((prev) => {
+          const otherGroups = prev.filter((m) => m.groupId !== groupId);
+          const mergedCurrent = mergeGroupMembersWithFallback([], items, usersRef.current);
+          return [...otherGroups, ...mergedCurrent];
+        });
       });
+
+      bindCollection<Contribution>(`groups/${groupId}/contributions`, (items) => {
+        setContributions((prev) => replaceGroupScopedItems(prev, groupId, items));
+      });
+
+      bindCollection<Expense>(`groups/${groupId}/expenses`, (items) => {
+        setExpenses((prev) => replaceGroupScopedItems(prev, groupId, items));
+      });
+
+      if (isManagerInCurrentGroup) {
+        bindCollection<ContributionAssignment>(`groups/${groupId}/assignments`, (items) => {
+          setAssignments((prev) => replaceGroupScopedItems(prev, groupId, items));
+        });
+        bindCollection<Payment>(`groups/${groupId}/payments`, (items) => {
+          setPayments((prev) => replaceGroupScopedItems(prev, groupId, items));
+        });
+        bindCollection<PaymentCommitment>(`groups/${groupId}/commitments`, (items) => {
+          setCommitments((prev) => replaceGroupScopedItems(prev, groupId, items));
+        });
+        unsubscribers.push(
+          onSnapshot(
+            collection(db, `groups/${groupId}/commitmentEvents`),
+            (snapshot) => {
+              if (activeUidRef.current !== uid) return;
+              const items: CommitmentEvent[] = [];
+              snapshot.forEach((d) => items.push(d.data() as CommitmentEvent));
+              setCommitmentEvents((prev) => mergeItemsById(prev, items));
+            },
+            (err) => console.warn(`groups/${groupId}/commitmentEvents snapshot error:`, err)
+          )
+        );
+        bindCollection<Dispute>(`groups/${groupId}/disputes`, (items) => {
+          setDisputes((prev) => replaceGroupScopedItems(prev, groupId, items));
+        });
+        bindCollection<JoinRequest>(`groups/${groupId}/joinRequests`, (items) => {
+          setJoinRequests((prev) => replaceGroupScopedItems(prev, groupId, items));
+        });
+        unsubscribers.push(
+          onSnapshot(
+            collection(db, `groups/${groupId}/auditLogs`),
+            (snapshot) => {
+              if (activeUidRef.current !== uid) return;
+              const items: AuditLog[] = [];
+              snapshot.forEach((d) => items.push(d.data() as AuditLog));
+              items.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+              setAuditLogs((prev) => [
+                ...prev.filter((l) => l.groupId !== groupId),
+                ...items,
+              ]);
+            },
+            (err) => console.warn(`groups/${groupId}/auditLogs snapshot error:`, err)
+          )
+        );
+        bindCollection<EmailCommunication>(`groups/${groupId}/communications`, (items) => {
+          setCommunications((prev) =>
+            replaceGroupScopedItems(
+              prev,
+              groupId,
+              items,
+              (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime()
+            )
+          );
+        });
+      } else {
+        // Ordinary member: strictly UID-scoped queries; clear privileged group logs/communications
+        setAuditLogs((prev) => prev.filter((l) => l.groupId !== groupId));
+        setCommunications((prev) => prev.filter((c) => c.groupId !== groupId));
+
+        bindMemberDualScoped<ContributionAssignment>('assignments', (items) => {
+          setAssignments((prev) => replaceGroupScopedItems(prev, groupId, items));
+        });
+        bindMemberDualScoped<Payment>('payments', (items) => {
+          setPayments((prev) => replaceGroupScopedItems(prev, groupId, items));
+        });
+        bindMemberDualScoped<PaymentCommitment>('commitments', (items) => {
+          setCommitments((prev) => replaceGroupScopedItems(prev, groupId, items));
+        });
+        bindMemberDualScoped<Dispute>('disputes', (items) => {
+          setDisputes((prev) => replaceGroupScopedItems(prev, groupId, items));
+        });
+        unsubscribers.push(
+          onSnapshot(
+            query(collection(db, `groups/${groupId}/joinRequests`), where('userId', '==', uid)),
+            (snapshot) => {
+              if (activeUidRef.current !== uid) return;
+              const items: JoinRequest[] = [];
+              snapshot.forEach((d) => items.push(d.data() as JoinRequest));
+              setJoinRequests((prev) => replaceGroupScopedItems(prev, groupId, items));
+            },
+            (err) => console.warn(`groups/${groupId}/joinRequests (self) snapshot error:`, err)
+          ),
+          onSnapshot(
+            query(
+              collection(db, `groups/${groupId}/commitmentEvents`),
+              where('memberUid', '==', uid)
+            ),
+            (snapshot) => {
+              if (activeUidRef.current !== uid) return;
+              const items: CommitmentEvent[] = [];
+              snapshot.forEach((d) => items.push(d.data() as CommitmentEvent));
+              setCommitmentEvents(items);
+            },
+            (err) => console.warn(`groups/${groupId}/commitmentEvents (self) snapshot error:`, err)
+          )
+        );
+      }
     } catch (e) {
       console.warn('Real-time listeners setup exception:', e);
     }
@@ -772,40 +997,89 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => {
       unsubscribers.forEach((unsub) => unsub());
     };
-  }, [currentGroup?.id, firebaseAuthUser]);
+  }, [
+    currentGroup?.id,
+    firebaseAuthUser?.uid,
+    firebaseAuthUser?.emailVerified,
+    isManagerInCurrentGroup,
+  ]);
 
-  // Sync state to local storage with quota-safe fallback for inline receipt images
+  // Persist state strictly to verified UID-scoped localStorage keys (never global unscoped keys)
   useEffect(() => {
-    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_users`, users);
-    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_groups`, groups);
-    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_currentGroup`, currentGroup);
-    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_groupMembers`, groupMembers);
-    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_contributions`, contributions);
-    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_assignments`, assignments);
+    const uid = firebaseAuthUser?.uid;
+    if (!uid || !firebaseAuthUser.emailVerified || activeUidRef.current !== uid) {
+      return;
+    }
+
+    persistStorageWithFallback(localStorage, getAccountStorageKey(uid, 'users'), users);
+    persistStorageWithFallback(localStorage, getAccountStorageKey(uid, 'groups'), groups);
     persistStorageWithFallback(
       localStorage,
-      `${STORAGE_KEY}_payments`,
+      getAccountStorageKey(uid, 'currentGroup'),
+      currentGroup
+    );
+    persistStorageWithFallback(
+      localStorage,
+      getAccountStorageKey(uid, 'groupMembers'),
+      groupMembers
+    );
+    persistStorageWithFallback(
+      localStorage,
+      getAccountStorageKey(uid, 'contributions'),
+      contributions
+    );
+    persistStorageWithFallback(
+      localStorage,
+      getAccountStorageKey(uid, 'assignments'),
+      assignments
+    );
+    persistStorageWithFallback(
+      localStorage,
+      getAccountStorageKey(uid, 'payments'),
       payments,
       stripDataUrlsFromPayments(payments)
     );
-    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_commitments`, commitments);
-    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_commitmentEvents`, commitmentEvents);
     persistStorageWithFallback(
       localStorage,
-      `${STORAGE_KEY}_expenses`,
+      getAccountStorageKey(uid, 'commitments'),
+      commitments
+    );
+    persistStorageWithFallback(
+      localStorage,
+      getAccountStorageKey(uid, 'commitmentEvents'),
+      commitmentEvents
+    );
+    persistStorageWithFallback(
+      localStorage,
+      getAccountStorageKey(uid, 'expenses'),
       expenses,
       stripDataUrlsFromExpenses(expenses)
     );
-    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_disputes`, disputes);
-    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_notifications`, notifications);
-    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_auditLogs`, auditLogs);
-    persistStorageWithFallback(localStorage, `${STORAGE_KEY}_communications`, communications);
+    persistStorageWithFallback(localStorage, getAccountStorageKey(uid, 'disputes'), disputes);
     persistStorageWithFallback(
       localStorage,
-      `${STORAGE_KEY}_notificationConfig`,
+      getAccountStorageKey(uid, 'joinRequests'),
+      joinRequests
+    );
+    persistStorageWithFallback(
+      localStorage,
+      getAccountStorageKey(uid, 'notifications'),
+      notifications
+    );
+    persistStorageWithFallback(localStorage, getAccountStorageKey(uid, 'auditLogs'), auditLogs);
+    persistStorageWithFallback(
+      localStorage,
+      getAccountStorageKey(uid, 'communications'),
+      communications
+    );
+    persistStorageWithFallback(
+      localStorage,
+      getAccountStorageKey(uid, 'notificationConfig'),
       notificationConfig
     );
   }, [
+    firebaseAuthUser?.uid,
+    firebaseAuthUser?.emailVerified,
     users,
     groups,
     currentGroup,
@@ -817,6 +1091,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     commitmentEvents,
     expenses,
     disputes,
+    joinRequests,
     notifications,
     auditLogs,
     communications,
@@ -932,13 +1207,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const signOut = async () => {
+    const signingOutUid = activeUidRef.current || firebaseAuthUser?.uid;
     try {
+      activeUidRef.current = null;
+      resetInMemoryState();
+      try {
+        purgeLegacyUnscopedStorage(localStorage);
+        if (signingOutUid) {
+          purgeAccountScopedStorage(localStorage, { targetUid: signingOutUid });
+        } else {
+          purgeAccountScopedStorage(localStorage);
+        }
+        sessionStorage.clear();
+      } catch {
+        // ignore storage errors
+      }
       await fbSignOut(auth);
       setFirebaseAuthUser(null);
       setCurrentUserState(null);
       setAuthStatus('unauthenticated');
-      clearAllData();
-      setUsers([]);
+      setIsHydratingAccount(false);
     } catch (error) {
       console.error('Sign Out failed:', error);
       setActionError('Could not sign out cleanly. Please refresh and try again.');
@@ -980,7 +1268,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
       setAuditLogs((prev) => [newLog, ...prev]);
 
-      if (gid && firebaseAuthUser) {
+      if (gid && firebaseAuthUser && firebaseAuthUser.emailVerified) {
         syncToFirestore(`groups/${gid}/auditLogs`, newLog.id, newLog as unknown as Record<string, unknown>, OperationType.CREATE);
       }
     },
@@ -992,30 +1280,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       userId: string,
       title: string,
       message: string,
-      category: AppNotification['category']
+      category: AppNotification['category'],
+      explicitGroupId?: string
     ) => {
+      const resolvedUid = resolveMemberUid(userId, explicitGroupId || currentGroup?.id) || userId;
       const newNotif: AppNotification = {
         id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
-        userId,
-        groupId: currentGroup?.id,
+        userId: resolvedUid,
+        senderId: currentUser?.id || firebaseAuthUser?.uid,
+        groupId: explicitGroupId || currentGroup?.id,
         title,
         message,
         category,
         read: false,
         createdAt: new Date().toISOString(),
       };
-      setNotifications((prev) => [newNotif, ...prev]);
+      if (resolvedUid === firebaseAuthUser?.uid) {
+        setNotifications((prev) => [newNotif, ...prev]);
+      }
 
-      if (firebaseAuthUser) {
+      if (firebaseAuthUser && firebaseAuthUser.emailVerified && !resolvedUid.startsWith('mem_')) {
         syncToFirestore(
-          `users/${userId}/notifications`,
+          `users/${resolvedUid}/notifications`,
           newNotif.id,
           newNotif as unknown as Record<string, unknown>,
           OperationType.CREATE
         );
       }
     },
-    [currentGroup?.id, firebaseAuthUser, syncToFirestore]
+    [currentGroup?.id, currentUser?.id, firebaseAuthUser, resolveMemberUid, syncToFirestore]
   );
 
   // Recalculate assignment status & active commitment from authoritative payment list
@@ -1190,12 +1483,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const isDirectAutoVerified = isVerifier;
 
+    const resolvedMemberUid =
+      targetAssignment.memberUid ||
+      resolveMemberUid(targetAssignment.memberId, targetAssignment.groupId);
+
     const newPayment: Payment = {
       id: paymentId,
       assignmentId: targetAssignment.id,
       contributionId: targetAssignment.contributionId,
       groupId: targetAssignment.groupId,
       memberId: targetAssignment.memberId,
+      memberUid: resolvedMemberUid,
       amountReceived: parsedAmount.value,
       paymentDate: nowIso,
       paymentMethod: params.paymentMethod,
@@ -1230,7 +1528,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           targetGroup.adminId,
           'Payment Proof Waiting Check',
           `${currentUser.name} submitted payment proof of MK ${parsedAmount.value.toLocaleString('en-US')} (Ref: ${effectiveReference}).`,
-          'payment'
+          'payment',
+          targetAssignment.groupId
         );
       }
     }
@@ -1256,6 +1555,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const event: CommitmentEvent = {
         id: `cev_${Date.now()}`,
         commitmentId: activeCommitment.id,
+        memberUid: resolvedMemberUid,
         date: nowIso,
         eventType: newOutstanding <= 0 ? 'completed' : 'partial_payment',
         notes:
@@ -1289,13 +1589,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetAssignment.memberId,
       'Payment Recorded',
       `Payment of MK ${parsedAmount.value.toLocaleString('en-US')} recorded via ${params.paymentMethod.replace('_', ' ')}. Ref: ${effectiveReference}.`,
-      'payment'
+      'payment',
+      targetAssignment.groupId
     );
 
-    // Automated intelligent communication dispatch to paying member
-    if (currentGroup) {
+    // Automated intelligent communication dispatch to paying member (manager-only per Firestore rules)
+    const targetGroupForComm = groups.find((g) => g.id === targetAssignment.groupId) || currentGroup;
+    if (isVerifier && targetGroupForComm) {
       const payingMember = groupMembers.find(
-        (m) => m.id === targetAssignment.memberId || m.userId === targetAssignment.memberId
+        (m) =>
+          m.groupId === targetGroupForComm.id &&
+          (m.id === targetAssignment.memberId || m.userId === targetAssignment.memberId)
       );
       const contribution = contributions.find((c) => c.id === targetAssignment.contributionId);
       const nextAssignments = assignments.map((a) =>
@@ -1305,12 +1609,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (payingMember && notificationConfig.autoPaymentConfirmations) {
         try {
           const confirmationDispatch = createEmailCommunicationDispatch(
-            currentGroup.id,
-            currentGroup,
+            targetGroupForComm.id,
+            targetGroupForComm,
             currentUser.id,
             'payment_confirmation',
             'individual',
-            `Payment Received Confirmation — ${currentGroup.name}`,
+            `Payment Received Confirmation — ${targetGroupForComm.name}`,
             '',
             [payingMember],
             nextAssignments,
@@ -1320,7 +1624,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           );
           setCommunications((prev) => [confirmationDispatch, ...prev]);
           syncToFirestore(
-            `groups/${currentGroup.id}/communications`,
+            `groups/${targetGroupForComm.id}/communications`,
             confirmationDispatch.id,
             confirmationDispatch as unknown as Record<string, unknown>,
             OperationType.CREATE
@@ -1333,12 +1637,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (payingMember && newOutstanding === 0 && notificationConfig.autoClearedBalanceNotes) {
         try {
           const clearedDispatch = createEmailCommunicationDispatch(
-            currentGroup.id,
-            currentGroup,
+            targetGroupForComm.id,
+            targetGroupForComm,
             currentUser.id,
             'cleared_balance',
             'individual',
-            `Balance Cleared Notice — ${currentGroup.name}`,
+            `Balance Cleared Notice — ${targetGroupForComm.name}`,
             '',
             [payingMember],
             nextAssignments,
@@ -1347,7 +1651,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           );
           setCommunications((prev) => [clearedDispatch, ...prev]);
           syncToFirestore(
-            `groups/${currentGroup.id}/communications`,
+            `groups/${targetGroupForComm.id}/communications`,
             clearedDispatch.id,
             clearedDispatch as unknown as Record<string, unknown>,
             OperationType.CREATE
@@ -1423,7 +1727,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       approved
         ? `Your payment of MK ${payment.amountReceived.toLocaleString('en-US')} (${payment.transactionReference}) is verified.`
         : `Your payment of MK ${payment.amountReceived.toLocaleString('en-US')} was rejected: ${reason?.trim()}.`,
-      'payment'
+      'payment',
+      payment.groupId
     );
 
     return { success: true };
@@ -1534,6 +1839,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       relatedAssignmentId: payment.assignmentId,
       paymentId: payment.id,
       memberId: payment.memberId,
+      memberUid: payment.memberUid || resolveMemberUid(payment.memberId, payment.groupId),
       title: `Payment Discrepancy: ${payment.id} (${payment.transactionReference})`,
       description: cleanReason,
       claimedAmount: payment.amountReceived,
@@ -1583,10 +1889,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const commitmentId = `cmt_${Date.now()}`;
     const nowIso = new Date().toISOString();
 
+    const resolvedMemberUid =
+      assignment.memberUid || resolveMemberUid(assignment.memberId, assignment.groupId);
+
     const newCommitment: PaymentCommitment = {
       id: commitmentId,
       assignmentId: assignment.id,
       memberId: assignment.memberId,
+      memberUid: resolvedMemberUid,
       groupId: assignment.groupId,
       contributionId: assignment.contributionId,
       originalOutstandingAmount: outstanding,
@@ -1605,6 +1915,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const event: CommitmentEvent = {
       id: `cev_${Date.now()}`,
       commitmentId,
+      memberUid: resolvedMemberUid,
       date: nowIso,
       eventType: 'created',
       notes: `Commitment agreed: MK ${outstanding.toLocaleString('en-US')} promised by ${new Date(params.promisedDate).toLocaleDateString()}. (${params.durationDays} days duration)`,
@@ -1638,7 +1949,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       assignment.memberId,
       'Payment Commitment Active',
       `Your promise to settle remaining MK ${outstanding.toLocaleString('en-US')} by ${new Date(params.promisedDate).toLocaleDateString()} has been recorded.`,
-      'commitment'
+      'commitment',
+      assignment.groupId
     );
 
     return true;
@@ -1666,6 +1978,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const event: CommitmentEvent = {
       id: `cev_${Date.now()}`,
       commitmentId,
+      memberUid:
+        commitment.memberUid ||
+        resolveMemberUid(commitment.memberId, commitment.groupId) ||
+        currentUser.id,
       date: new Date().toISOString(),
       eventType: 'extension_requested',
       notes: `Extension requested to ${new Date(newDate).toLocaleDateString()}. Reason: ${reason}`,
@@ -1721,6 +2037,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const event: CommitmentEvent = {
       id: `cev_${Date.now()}`,
       commitmentId,
+      memberUid:
+        commitment.memberUid || resolveMemberUid(commitment.memberId, commitment.groupId),
       date: new Date().toISOString(),
       eventType: approved ? 'extension_granted' : 'revised',
       notes: approved
@@ -1749,7 +2067,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       approved
         ? `Your payment commitment deadline has been moved to ${new Date(newDate).toLocaleDateString()}.`
         : 'Your extension request was declined. Please adhere to the original deadline.',
-      'commitment'
+      'commitment',
+      commitment.groupId
     );
   };
 
@@ -1909,6 +2228,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         contributionId,
         groupId: contributionData.groupId,
         memberId: ma.memberId,
+        memberUid: resolveMemberUid(ma.memberId, contributionData.groupId),
         assignedAmount: toSafeIntMWK(ma.amount),
         applicableRate: stoveType ? RATES[stoveType] : undefined,
         stoveTypeAtAssignment: stoveType,
@@ -1953,7 +2273,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ma.memberId,
         'New Contribution Set',
         `Your share for "${contributionData.title}" is MK ${toSafeIntMWK(ma.amount).toLocaleString('en-US')}. Due ${new Date(contributionData.deadline).toLocaleDateString()}.`,
-        'announcement'
+        'announcement',
+        contributionData.groupId
       );
     });
 
@@ -2018,31 +2339,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updatedAt: nowIso,
     };
 
-    syncToFirestore(
-      'groups',
-      groupId,
-      newGroup as unknown as Record<string, unknown>,
-      OperationType.CREATE
-    ).then(() => {
-      syncToFirestore(
-        `groups/${groupId}/members`,
-        currentUser.id,
-        normalizedAdminMember as unknown as Record<string, unknown>,
-        OperationType.CREATE
-      );
-      syncToFirestore(
-        'groupInvites',
-        randomCode,
-        inviteDoc as unknown as Record<string, unknown>,
-        OperationType.CREATE
-      );
-    });
+    const creatorUid = firebaseAuthUser?.uid || currentUser.id;
+    const expectedAuthUid = firebaseAuthUser?.uid;
 
-    addAuditLog('GROUP_CREATED', `Group "${groupData.name}" created with join code ${randomCode}`, {
-      targetEntity: 'group',
-      targetId: groupId,
-      groupId,
-    });
+    if (expectedAuthUid && firebaseAuthUser.emailVerified && activeUidRef.current === expectedAuthUid) {
+      setSyncStatus('syncing');
+      const batch = writeBatch(db);
+      batch.set(
+        doc(db, 'groups', groupId),
+        sanitizeForFirestore(newGroup as unknown as Record<string, unknown>)
+      );
+      batch.set(
+        doc(db, `groups/${groupId}/members`, currentUser.id),
+        sanitizeForFirestore(normalizedAdminMember as unknown as Record<string, unknown>)
+      );
+      batch.set(
+        doc(db, 'groupInvites', randomCode),
+        sanitizeForFirestore(inviteDoc as unknown as Record<string, unknown>)
+      );
+      batch
+        .commit()
+        .then(() => {
+          if (activeUidRef.current !== expectedAuthUid) return;
+          setSyncStatus('synced');
+          addAuditLog('GROUP_CREATED', `Group "${groupData.name}" created with join code ${randomCode}`, {
+            targetEntity: 'group',
+            targetId: groupId,
+            groupId,
+          });
+        })
+        .catch((err) => {
+          if (activeUidRef.current !== expectedAuthUid) return;
+          console.warn('Atomic group creation batch failed:', err);
+          setSyncStatus(typeof navigator !== 'undefined' && !navigator.onLine ? 'offline_queued' : 'error');
+          setActionError('Cloud sync error: group was created locally but could not sync to Firestore.');
+        });
+    } else {
+      addAuditLog('GROUP_CREATED', `Group "${groupData.name}" created with join code ${randomCode}`, {
+        targetEntity: 'group',
+        targetId: groupId,
+        groupId,
+      });
+    }
+    void creatorUid;
     return groupId;
   };
 
@@ -2307,17 +2646,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     }
 
-    // Auto-join via code
+    // Auto-join via code (atomic writeBatch required by Firestore inviteCodeUsed/getAfter rules)
+    const joiningUid = firebaseAuthUser.uid;
     const newMember: GroupMember = {
-      id: currentUser.id,
-      userId: currentUser.id,
-      linkedUserId: currentUser.id,
+      id: joiningUid,
+      userId: joiningUid,
+      linkedUserId: joiningUid,
       joinedViaInvite: true,
+      inviteCodeUsed: invite.inviteCode,
       groupId: invite.groupId,
       name: currentUser.name,
       email: currentUser.email.trim().toLowerCase(),
       phone: currentUser.phone || '',
-      memberRefId: generateMemberReferenceId(invite.groupId, groupMembers.filter((m) => m.groupId === invite.groupId).length),
+      memberRefId: generateMemberReferenceId(
+        invite.groupId,
+        groupMembers.filter((m) => m.groupId === invite.groupId).length
+      ),
       roleInGroup: 'member',
       membershipDate: nowIso,
       joinedAt: nowIso,
@@ -2327,18 +2671,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     try {
-      await setDoc(
-        doc(db, `groups/${invite.groupId}/members`, currentUser.id),
-        sanitizeForFirestore(newMember as unknown as Record<string, unknown>),
-        { merge: true }
+      const batch = writeBatch(db);
+      batch.set(
+        doc(db, `groups/${invite.groupId}/members`, joiningUid),
+        sanitizeForFirestore(newMember as unknown as Record<string, unknown>)
       );
-      await updateDoc(doc(db, 'groups', invite.groupId), {
-        memberUids: arrayUnion(currentUser.id),
+      batch.update(doc(db, 'groups', invite.groupId), {
+        memberUids: arrayUnion(joiningUid),
         memberCount: increment(1),
         updatedAt: nowIso,
       });
+      await batch.commit();
+
+      if (activeUidRef.current !== joiningUid) {
+        return { success: false, error: 'Session changed while joining group.' };
+      }
 
       const joinedSnap = await getDoc(doc(db, 'groups', invite.groupId));
+      if (activeUidRef.current !== joiningUid) {
+        return { success: false, error: 'Session changed while joining group.' };
+      }
       if (joinedSnap.exists()) {
         const joinedGroup = joinedSnap.data() as Group;
         setGroups((prev) => mergeItemsById(prev, [joinedGroup]));
@@ -2352,12 +2704,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     }
 
-    setGroupMembers((prev) => [...prev.filter((m) => !(m.groupId === invite.groupId && m.id === newMember.id)), newMember]);
+    setGroupMembers((prev) => [
+      ...prev.filter((m) => !(m.groupId === invite.groupId && m.id === newMember.id)),
+      newMember,
+    ]);
     addNotification(
       invite.adminId,
       'New Member Joined',
       `${currentUser.name} joined ${invite.groupName} using the group invite code.`,
-      'announcement'
+      'announcement',
+      invite.groupId
     );
     setPendingInviteCode(null);
 
@@ -2387,54 +2743,95 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       reviewedBy: currentUser.id,
     };
 
+    const reviewerUid = firebaseAuthUser?.uid || currentUser.id;
     setJoinRequests((prev) => prev.map((r) => (r.id === requestId ? updatedReq : r)));
-    await syncToFirestore(
-      `groups/${groupId}/joinRequests`,
-      requestId,
-      updatedReq as unknown as Record<string, unknown>,
-      OperationType.UPDATE
-    );
 
-    if (approved) {
-      const targetGroup = groups.find((g) => g.id === groupId);
-      const newMember: GroupMember = {
-        id: req.userId,
-        userId: req.userId,
-        linkedUserId: req.userId,
-        joinedViaInvite: true,
+    if (!approved) {
+      await syncToFirestore(
+        `groups/${groupId}/joinRequests`,
+        requestId,
+        updatedReq as unknown as Record<string, unknown>,
+        OperationType.UPDATE
+      );
+      return { success: true };
+    }
+
+    const targetGroup = groups.find((g) => g.id === groupId);
+    const newMember: GroupMember = {
+      id: req.userId,
+      userId: req.userId,
+      linkedUserId: req.userId,
+      joinedViaInvite: true,
+      inviteCodeUsed: req.inviteCode,
+      groupId,
+      name: req.name,
+      email: req.email,
+      phone: req.phone || '',
+      memberRefId: generateMemberReferenceId(
         groupId,
-        name: req.name,
-        email: req.email,
-        phone: req.phone || '',
-        memberRefId: generateMemberReferenceId(groupId, groupMembers.filter((m) => m.groupId === groupId).length),
-        roleInGroup: 'member',
-        membershipDate: nowIso,
-        joinedAt: nowIso,
-        status: 'active',
-        createdAt: nowIso,
+        groupMembers.filter((m) => m.groupId === groupId).length
+      ),
+      roleInGroup: 'member',
+      membershipDate: nowIso,
+      joinedAt: nowIso,
+      status: 'active',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    if (firebaseAuthUser && firebaseAuthUser.emailVerified && activeUidRef.current === reviewerUid) {
+      try {
+        const batch = writeBatch(db);
+        batch.set(
+          doc(db, `groups/${groupId}/joinRequests`, requestId),
+          sanitizeForFirestore(updatedReq as unknown as Record<string, unknown>),
+          { merge: true }
+        );
+        batch.set(
+          doc(db, `groups/${groupId}/members`, newMember.id),
+          sanitizeForFirestore(newMember as unknown as Record<string, unknown>),
+          { merge: true }
+        );
+        batch.update(doc(db, 'groups', groupId), {
+          memberUids: arrayUnion(req.userId),
+          memberCount: increment(1),
+          updatedAt: nowIso,
+        });
+        await batch.commit();
+      } catch (err) {
+        console.warn('Approve join request batch failed:', err);
+        return { success: false, error: 'Could not approve member in Firestore right now.' };
+      }
+      if (activeUidRef.current !== reviewerUid) {
+        return { success: false, error: 'Session changed while approving request.' };
+      }
+    }
+
+    setGroupMembers((prev) => [
+      ...prev.filter((m) => !(m.groupId === groupId && m.id === newMember.id)),
+      newMember,
+    ]);
+    if (targetGroup) {
+      const nextUids = Array.from(
+        new Set([...(targetGroup.memberUids || [targetGroup.adminId]), req.userId])
+      );
+      const nextGroup = {
+        ...targetGroup,
+        memberUids: nextUids,
+        memberCount: nextUids.length,
         updatedAt: nowIso,
       };
-      setGroupMembers((prev) => [...prev, newMember]);
-      await syncToFirestore(
-        `groups/${groupId}/members`,
-        newMember.id,
-        newMember as unknown as Record<string, unknown>,
-        OperationType.CREATE
-      );
-      if (targetGroup) {
-        const nextUids = Array.from(new Set([...(targetGroup.memberUids || [targetGroup.adminId]), req.userId]));
-        const nextGroup = { ...targetGroup, memberUids: nextUids, memberCount: nextUids.length, updatedAt: nowIso };
-        setGroups((prev) => prev.map((g) => (g.id === groupId ? nextGroup : g)));
-        if (currentGroup?.id === groupId) setCurrentGroup(nextGroup);
-        await syncToFirestore('groups', groupId, nextGroup as unknown as Record<string, unknown>, OperationType.UPDATE);
-      }
-      addNotification(
-        req.userId,
-        'Membership Approved',
-        `You have been approved to join ${targetGroup?.name || 'the group'}.`,
-        'announcement'
-      );
+      setGroups((prev) => prev.map((g) => (g.id === groupId ? nextGroup : g)));
+      if (currentGroup?.id === groupId) setCurrentGroup(nextGroup);
     }
+
+    addNotification(
+      req.userId,
+      'Membership Approved',
+      `You have been approved to join ${targetGroup?.name || 'the group'}.`,
+      'announcement',
+      groupId
+    );
 
     return { success: true };
   };
@@ -2766,11 +3163,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       prev.map((m) => (m.id === member.id ? updatedMember : m))
     );
 
-    syncToFirestore(
-      `groups/${member.groupId}/members`,
-      member.id,
-      updatedMember as unknown as Record<string, unknown>
-    );
+    const targetUid =
+      member.linkedUserId || (!member.userId.startsWith('mem_') ? member.userId : undefined);
+    const targetGroup = groups.find((g) => g.id === member.groupId) || currentGroup;
+    if (targetUid && targetUid !== targetGroup?.adminId) {
+      setGroups((prev) =>
+        prev.map((g) =>
+          g.id === member.groupId && Array.isArray(g.memberUids)
+            ? { ...g, memberUids: g.memberUids.filter((u) => u !== targetUid), updatedAt: nowIso }
+            : g
+        )
+      );
+    }
+
+    const expectedUid = firebaseAuthUser?.uid;
+    if (expectedUid && firebaseAuthUser.emailVerified && activeUidRef.current === expectedUid) {
+      const batch = writeBatch(db);
+      batch.set(
+        doc(db, `groups/${member.groupId}/members`, member.id),
+        sanitizeForFirestore(updatedMember as unknown as Record<string, unknown>),
+        { merge: true }
+      );
+      if (targetUid && targetUid !== targetGroup?.adminId) {
+        batch.update(doc(db, 'groups', member.groupId), {
+          memberUids: arrayRemove(targetUid),
+          updatedAt: nowIso,
+        });
+      }
+      batch.commit().catch((err) => {
+        console.warn('Suspend member batch failed:', err);
+        setActionError('Cloud sync error: member suspension could not be synced to Firestore.');
+      });
+    }
 
     addAuditLog('MEMBER_SUSPENDED', `Suspended ${updatedMember.name} (${updatedMember.email}). Reason: ${cleanReason}`, {
       securityEvent: true,
@@ -2812,11 +3236,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       prev.map((m) => (m.id === member.id ? updatedMember : m))
     );
 
-    syncToFirestore(
-      `groups/${member.groupId}/members`,
-      member.id,
-      updatedMember as unknown as Record<string, unknown>
-    );
+    const targetUid =
+      member.linkedUserId || (!member.userId.startsWith('mem_') ? member.userId : undefined);
+    if (targetUid) {
+      setGroups((prev) =>
+        prev.map((g) =>
+          g.id === member.groupId
+            ? {
+                ...g,
+                memberUids: Array.from(new Set([...(g.memberUids || [g.adminId]), targetUid])),
+                updatedAt: nowIso,
+              }
+            : g
+        )
+      );
+    }
+
+    const expectedUid = firebaseAuthUser?.uid;
+    if (expectedUid && firebaseAuthUser.emailVerified && activeUidRef.current === expectedUid) {
+      const batch = writeBatch(db);
+      batch.set(
+        doc(db, `groups/${member.groupId}/members`, member.id),
+        sanitizeForFirestore(updatedMember as unknown as Record<string, unknown>),
+        { merge: true }
+      );
+      if (targetUid) {
+        batch.update(doc(db, 'groups', member.groupId), {
+          memberUids: arrayUnion(targetUid),
+          updatedAt: nowIso,
+        });
+      }
+      batch.commit().catch((err) => {
+        console.warn('Reinstate member batch failed:', err);
+        setActionError('Cloud sync error: member reinstatement could not be synced to Firestore.');
+      });
+    }
 
     addAuditLog('MEMBER_REINSTATED', `Reinstated ${updatedMember.name} to active status. Reason: ${cleanReason}`, {
       targetEntity: 'member',
@@ -2907,17 +3361,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       prev.map((m) => (m.id === member.id ? updatedMember : m))
     );
 
+    const targetUid =
+      member.linkedUserId || (!member.userId.startsWith('mem_') ? member.userId : undefined);
+    const targetGroup = groups.find((g) => g.id === member.groupId) || currentGroup;
+    const nextCount = Math.max(1, (targetGroup?.memberCount || 1) - 1);
+
     setGroups((prev) =>
       prev.map((g) =>
-        g.id === member.groupId ? { ...g, memberCount: Math.max(1, g.memberCount - 1) } : g
+        g.id === member.groupId
+          ? {
+              ...g,
+              memberCount: nextCount,
+              memberUids:
+                targetUid && targetUid !== g.adminId && Array.isArray(g.memberUids)
+                  ? g.memberUids.filter((u) => u !== targetUid)
+                  : g.memberUids,
+              updatedAt: nowIso,
+            }
+          : g
       )
     );
 
-    syncToFirestore(
-      `groups/${member.groupId}/members`,
-      member.id,
-      updatedMember as unknown as Record<string, unknown>
-    );
+    const expectedUid = firebaseAuthUser?.uid;
+    if (expectedUid && firebaseAuthUser.emailVerified && activeUidRef.current === expectedUid) {
+      const batch = writeBatch(db);
+      batch.set(
+        doc(db, `groups/${member.groupId}/members`, member.id),
+        sanitizeForFirestore(updatedMember as unknown as Record<string, unknown>),
+        { merge: true }
+      );
+      if (targetUid && targetUid !== targetGroup?.adminId) {
+        batch.update(doc(db, 'groups', member.groupId), {
+          memberUids: arrayRemove(targetUid),
+          memberCount: nextCount,
+          updatedAt: nowIso,
+        });
+      }
+      batch.commit().catch((err) => {
+        console.warn('Remove member batch failed:', err);
+        setActionError('Cloud sync error: member removal could not be synced to Firestore.');
+      });
+    }
 
     addAuditLog(
       'MEMBER_REMOVED',
@@ -2929,7 +3413,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         reason: cleanReason,
         beforeValue: member.status,
         afterValue: 'removed',
-        groupId: currentGroup.id,
+        groupId: member.groupId,
       }
     );
 
@@ -3015,8 +3499,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const nowIso = new Date().toISOString();
     const disputeId = `dsp_${Date.now()}`;
 
+    const targetGroup = groups.find((g) => g.id === disputeData.groupId) || currentGroup;
     const newDispute: Dispute = {
       ...disputeData,
+      memberUid:
+        resolveMemberUid(disputeData.memberId, disputeData.groupId) || currentUser.id,
       claimedAmount: disputeData.claimedAmount ? toSafeIntMWK(disputeData.claimedAmount) : undefined,
       id: disputeId,
       status: 'open',
@@ -3039,12 +3526,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       groupId: disputeData.groupId,
     });
 
-    if (currentGroup?.adminId) {
+    if (targetGroup?.adminId) {
       addNotification(
-        currentGroup.adminId,
+        targetGroup.adminId,
         'New Dispute Filed',
         `${currentUser.name} submitted a dispute: "${disputeData.title}".`,
-        'dispute'
+        'dispute',
+        disputeData.groupId
       );
     }
   };
@@ -3090,7 +3578,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       dispute.memberId,
       `Dispute ${status === 'resolved' ? 'Resolved' : 'Declined'}`,
       `Outcome on your dispute "${dispute.title}": ${resolutionNote}`,
-      'dispute'
+      'dispute',
+      dispute.groupId
     );
   };
 
@@ -3123,6 +3612,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const rescanAndRepairRecords = (): IntegrityReport => {
+    const uid = firebaseAuthUser?.uid || activeUidRef.current;
     const res = auditAndRepairFinancialData({
       groups,
       groupMembers,
@@ -3133,6 +3623,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       expenses,
     });
     setIntegrityReport(res.report);
+    if (res.report.repairedCount > 0 && uid) {
+      try {
+        const snapshotPayload = {
+          savedAt: new Date().toISOString(),
+          groupMembers,
+          contributions,
+          assignments,
+          payments,
+          commitments,
+          expenses,
+        };
+        localStorage.setItem(
+          getAccountStorageKey(uid, 'pre_repair_snapshot'),
+          JSON.stringify(snapshotPayload)
+        );
+        setHasPreRepairSnapshot(true);
+      } catch {
+        // ignore storage errors
+      }
+    }
     if (res.report.repairedCount > 0 || res.report.flaggedCount > 0) {
       setGroupMembers(res.groupMembers);
       setContributions(res.contributions);
@@ -3153,7 +3663,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!currentUser || !canManageGroupRole(effectiveRole)) {
       return { success: false, error: 'Only administrators may restore snapshots.' };
     }
-    const raw = localStorage.getItem(PRE_REPAIR_SNAPSHOT_KEY);
+    const uid = firebaseAuthUser?.uid || activeUidRef.current;
+    if (!uid) {
+      return { success: false, error: 'Authenticated session required to restore snapshot.' };
+    }
+    const raw = localStorage.getItem(getAccountStorageKey(uid, 'pre_repair_snapshot'));
     if (!raw) {
       return { success: false, error: 'No pre-repair snapshot is stored.' };
     }
@@ -3175,37 +3689,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const clearAllData = () => {
-    localStorage.removeItem(`${STORAGE_KEY}_users`);
-    localStorage.removeItem(`${STORAGE_KEY}_groups`);
-    localStorage.removeItem(`${STORAGE_KEY}_currentGroup`);
-    localStorage.removeItem(`${STORAGE_KEY}_groupMembers`);
-    localStorage.removeItem(`${STORAGE_KEY}_contributions`);
-    localStorage.removeItem(`${STORAGE_KEY}_assignments`);
-    localStorage.removeItem(`${STORAGE_KEY}_payments`);
-    localStorage.removeItem(`${STORAGE_KEY}_commitments`);
-    localStorage.removeItem(`${STORAGE_KEY}_commitmentEvents`);
-    localStorage.removeItem(`${STORAGE_KEY}_expenses`);
-    localStorage.removeItem(`${STORAGE_KEY}_disputes`);
-    localStorage.removeItem(`${STORAGE_KEY}_notifications`);
-    localStorage.removeItem(`${STORAGE_KEY}_auditLogs`);
-    localStorage.removeItem(`${STORAGE_KEY}_communications`);
+    const uid = activeUidRef.current || firebaseAuthUser?.uid;
+    try {
+      purgeLegacyUnscopedStorage(localStorage);
+      if (uid) {
+        purgeAccountScopedStorage(localStorage, { targetUid: uid });
+      }
+    } catch {
+      // ignore storage errors
+    }
 
+    resetInMemoryState();
     setUsers(currentUser ? [currentUser] : []);
-    setGroups([]);
-    setCurrentGroup(null);
-    setGroupMembers([]);
-    setContributions([]);
-    setAssignments([]);
-    setPayments([]);
-    setCommitments([]);
-    setCommitmentEvents([]);
-    setExpenses([]);
-    setDisputes([]);
-    setJoinRequests([]);
-    setNotifications([]);
-    setAuditLogs([]);
-    setCommunications([]);
-    setIntegrityReport(null);
   };
 
   return (
@@ -3214,6 +3709,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         currentUser,
         setCurrentUser,
         authStatus,
+        isHydratingAccount,
         authError,
         clearAuthError: () => setAuthError(null),
         firebaseAuthUser,

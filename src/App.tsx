@@ -118,6 +118,7 @@ export default function App() {
   const {
     currentUser,
     authStatus,
+    isHydratingAccount,
     isEmailVerified,
     actionError,
     clearActionError,
@@ -167,6 +168,25 @@ export default function App() {
 
   const [isCreateContributionOpen, setIsCreateContributionOpen] = useState(false);
   const [isRecordExpenseOpen, setIsRecordExpenseOpen] = useState(false);
+
+  const prevUidRef = useRef<string | null>(null);
+
+  // Reset UI tab and close transient modals/drawers whenever authenticated UID changes or signs out
+  useEffect(() => {
+    const nextUid = firebaseAuthUser?.uid || null;
+    if (prevUidRef.current !== nextUid) {
+      prevUidRef.current = nextUid;
+      setCurrentTab('dashboard');
+      setIsMobileMenuOpen(false);
+      setIsJoinModalOpen(false);
+      setIsRecordPaymentOpen(false);
+      setRecordPaymentAssignmentId(undefined);
+      setIsCreateCommitmentOpen(false);
+      setCreateCommitmentAssignmentId(undefined);
+      setIsCreateContributionOpen(false);
+      setIsRecordExpenseOpen(false);
+    }
+  }, [firebaseAuthUser?.uid]);
 
   // Auto-enter app once Firebase restores an active session (unless user deliberately returned to landing)
   useEffect(() => {
@@ -274,6 +294,25 @@ export default function App() {
   // Email verification gate (matches firestore.rules email_verified == true requirement)
   if (!isEmailVerified) {
     return <EmailVerificationGate />;
+  }
+
+  // Wait until UID-scoped Firestore group listeners settle so zero stale UI renders during account switch
+  if (isHydratingAccount) {
+    return (
+      <div className="min-h-screen bg-[#F6F8FC] dark:bg-[#070B14] flex items-center justify-center p-6">
+        <div className="bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-800 rounded-3xl p-8 max-w-sm w-full text-center space-y-4 shadow-sm">
+          <div className="flex justify-center">
+            <UnitSpotLogo size="md" />
+          </div>
+          <div className="h-1.5 w-32 mx-auto rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+            <div className="h-full w-2/3 bg-blue-600 dark:bg-cyan-400 rounded-full" />
+          </div>
+          <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+            Loading your private UNIT SPOT workspace...
+          </p>
+        </div>
+      </div>
+    );
   }
 
   const isGroupAdmin = canManageGroupRole(effectiveRole);

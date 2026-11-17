@@ -1,0 +1,70 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Global default deny catch-all
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    function isValidPathId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isVerifiedUser() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isValidReceiptUpload() {
+      return request.resource != null &&
+             request.resource.size > 0 &&
+             request.resource.size <= 5 * 1024 * 1024 &&
+             request.resource.contentType.matches('image/.*');
+    }
+
+    // UID-scoped receipt images: /receipts/{groupId}/{userId}/{fileName}
+    // Readable only by the uploading user or the group's authorized admin/treasurer recorded in object metadata.
+    match /receipts/{groupId}/{userId}/{fileName} {
+      allow read: if isVerifiedUser() &&
+                  isValidPathId(groupId) &&
+                  isValidPathId(userId) &&
+                  resource != null && (
+                    request.auth.uid == userId ||
+                    (resource.metadata != null && resource.metadata.adminId == request.auth.uid) ||
+                    (resource.metadata != null && resource.metadata.treasurerId == request.auth.uid) ||
+                    (resource.metadata != null && resource.metadata.uploaderUid == request.auth.uid)
+                  );
+
+      allow create, update: if isVerifiedUser() &&
+                            isValidPathId(groupId) &&
+                            isValidPathId(userId) &&
+                            request.auth.uid == userId &&
+                            fileName.size() > 0 && fileName.size() <= 160 &&
+                            isValidReceiptUpload() &&
+                            request.resource.metadata != null &&
+                            request.resource.metadata.groupId == groupId &&
+                            request.resource.metadata.uploaderUid == request.auth.uid;
+
+      allow delete: if isVerifiedUser() &&
+                    isValidPathId(groupId) &&
+                    isValidPathId(userId) &&
+                    resource != null && (
+                      request.auth.uid == userId ||
+                      (resource.metadata != null && resource.metadata.adminId == request.auth.uid)
+                    );
+    }
+
+    // Legacy receipt paths denied for new writes; readable only if metadata explicitly authorizes the requester.
+    match /receipts/{groupId}/{legacyFileName} {
+      allow write: if false;
+      allow read: if isVerifiedUser() &&
+                  isValidPathId(groupId) &&
+                  resource != null &&
+                  resource.metadata != null && (
+                    resource.metadata.uploaderUid == request.auth.uid ||
+                    resource.metadata.adminId == request.auth.uid ||
+                    resource.metadata.treasurerId == request.auth.uid
+                  );
+    }
+  }
+}

@@ -7,7 +7,7 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // Core helper functions
+    // Core primitive helpers
     function isValidId(id) {
       return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
@@ -32,51 +32,54 @@ service cloud.firestore {
       return resource.data;
     }
 
-    // Verified super admin claim (no database lookup; safe inside list rules)
-    function isSuperAdminToken() {
-      return isVerifiedAccount() && request.auth.token.email == 'cchilongo88@gmail.com';
+    function groupExists(groupId) {
+      return exists(/databases/$(database)/documents/groups/$(groupId));
     }
 
-    // Full super admin check (for single-doc and subcollection rules)
-    function isSuperAdmin() {
-      return isSuperAdminToken() || (
-        isVerifiedAccount() &&
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-      );
+    function groupDoc(groupId) {
+      return get(/databases/$(database)/documents/groups/$(groupId)).data;
     }
 
-    // Check if user is an enrolled group member or group admin
-    function isGroupMember(groupId) {
-      return isSignedIn() && (
-        isSuperAdmin() ||
+    function memberDocExists(groupId, uid) {
+      return exists(/databases/$(database)/documents/groups/$(groupId)/members/$(uid));
+    }
+
+    function memberDoc(groupId, uid) {
+      return get(/databases/$(database)/documents/groups/$(groupId)/members/$(uid)).data;
+    }
+
+    // Strict active group membership check (revoked/suspended/removed members lose access immediately)
+    function isActiveGroupMember(groupId) {
+      return isSignedIn() && groupExists(groupId) && (
+        groupDoc(groupId).adminId == request.auth.uid ||
+        ('treasurerId' in groupDoc(groupId) && groupDoc(groupId).treasurerId == request.auth.uid) ||
         (
-          exists(/databases/$(database)/documents/groups/$(groupId)) && (
-            get(/databases/$(database)/documents/groups/$(groupId)).data.adminId == request.auth.uid ||
-            ('treasurerId' in get(/databases/$(database)/documents/groups/$(groupId)).data &&
-              get(/databases/$(database)/documents/groups/$(groupId)).data.treasurerId == request.auth.uid) ||
-            ('memberUids' in get(/databases/$(database)/documents/groups/$(groupId)).data &&
-              request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberUids)
-          )
+          ('memberUids' in groupDoc(groupId) && request.auth.uid in groupDoc(groupId).memberUids) &&
+          (!memberDocExists(groupId, request.auth.uid) || memberDoc(groupId, request.auth.uid).status == 'active')
         ) ||
-        exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid))
+        (
+          memberDocExists(groupId, request.auth.uid) &&
+          memberDoc(groupId, request.auth.uid).status == 'active'
+        )
       );
     }
 
-    // Check if user is group admin or treasurer
+    // Primary group owner / admin only
+    function isGroupAdmin(groupId) {
+      return isVerifiedAccount() &&
+             groupExists(groupId) &&
+             groupDoc(groupId).adminId == request.auth.uid;
+    }
+
+    // Group administrator or active treasurer
     function isGroupManager(groupId) {
-      return isVerifiedAccount() && (
-        isSuperAdmin() ||
+      return isVerifiedAccount() && groupExists(groupId) && (
+        groupDoc(groupId).adminId == request.auth.uid ||
+        ('treasurerId' in groupDoc(groupId) && groupDoc(groupId).treasurerId == request.auth.uid) ||
         (
-          exists(/databases/$(database)/documents/groups/$(groupId)) && (
-            get(/databases/$(database)/documents/groups/$(groupId)).data.adminId == request.auth.uid ||
-            ('treasurerId' in get(/databases/$(database)/documents/groups/$(groupId)).data &&
-              get(/databases/$(database)/documents/groups/$(groupId)).data.treasurerId == request.auth.uid)
-          )
-        ) ||
-        (
-          exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)) &&
-          get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.roleInGroup in ['admin', 'treasurer'] &&
-          get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.status == 'active'
+          memberDocExists(groupId, request.auth.uid) &&
+          memberDoc(groupId, request.auth.uid).roleInGroup in ['admin', 'treasurer'] &&
+          memberDoc(groupId, request.auth.uid).status == 'active'
         )
       );
     }
@@ -97,242 +100,433 @@ service cloud.firestore {
       ];
     }
 
-    // Schema validators aligned with firebase-blueprint.json
+    // Strict schema validators aligned with firebase-blueprint.json & TypeScript interfaces
     function isValidUser(data) {
       return data.keys().hasAll(['id', 'name', 'email', 'role', 'createdAt']) &&
-             data.keys().hasOnly(['id', 'name', 'email', 'phone', 'role', 'roomNumber', 'avatarUrl', 'preferredLanguage', 'createdAt']) &&
+             data.keys().hasOnly([
+               'id', 'name', 'email', 'phone', 'role', 'roomNumber',
+               'avatarUrl', 'preferredLanguage', 'createdAt'
+             ]) &&
              isValidId(data.id) &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
              data.email is string && data.email.size() > 0 && data.email.size() <= 120 &&
-             data.role in ['super_admin', 'group_admin', 'treasurer', 'member'] &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+             (!('roomNumber' in data) || (data.roomNumber is string && data.roomNumber.size() <= 50)) &&
+             (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 500)) &&
+             data.role in ['group_admin', 'treasurer', 'member', 'super_admin'] &&
              (!('preferredLanguage' in data) || data.preferredLanguage in ['en', 'ny']) &&
-             data.createdAt is string && data.createdAt.size() <= 64;
+             data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 64;
     }
 
     function isValidGroup(data) {
       return data.keys().hasAll(['id', 'name', 'category', 'adminId', 'defaultCurrency', 'joinCode', 'createdAt']) &&
+             data.keys().hasOnly([
+               'id', 'name', 'description', 'category', 'adminId', 'treasurerId',
+               'memberUids', 'defaultCurrency', 'paymentRules', 'joinCode', 'joinPolicy',
+               'inviteRevoked', 'status', 'archivedAt', 'archivedBy', 'archiveReason',
+               'createdAt', 'updatedAt', 'memberCount'
+             ]) &&
              isValidId(data.id) &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
              isValidGroupCategory(data.category) &&
              isValidId(data.adminId) &&
+             (!('treasurerId' in data) || isValidId(data.treasurerId)) &&
              data.defaultCurrency is string && data.defaultCurrency.size() > 0 && data.defaultCurrency.size() <= 10 &&
+             (!('paymentRules' in data) || (data.paymentRules is string && data.paymentRules.size() <= 1000)) &&
              data.joinCode is string && data.joinCode.size() > 0 && data.joinCode.size() <= 50 &&
              (!('joinPolicy' in data) || data.joinPolicy in ['code_auto', 'admin_approval']) &&
              (!('inviteRevoked' in data) || data.inviteRevoked is bool) &&
              (!('memberUids' in data) || (data.memberUids is list && data.memberUids.size() <= 200)) &&
-             (!('status' in data) || data.status in ['active', 'archived']);
+             (!('memberCount' in data) || (data.memberCount is number && data.memberCount >= 0 && data.memberCount <= 500)) &&
+             (!('status' in data) || data.status in ['active', 'archived']) &&
+             data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 64;
     }
 
     function isValidGroupInvite(data) {
       return data.keys().hasAll(['inviteCode', 'groupId', 'groupName', 'category', 'joinPolicy', 'revoked', 'adminId', 'createdAt']) &&
-             data.keys().hasOnly(['inviteCode', 'groupId', 'groupName', 'category', 'joinPolicy', 'revoked', 'adminId', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly([
+               'inviteCode', 'groupId', 'groupName', 'category', 'joinPolicy',
+               'revoked', 'adminId', 'createdAt', 'updatedAt'
+             ]) &&
              isValidId(data.inviteCode) &&
              isValidId(data.groupId) &&
              data.groupName is string && data.groupName.size() > 0 && data.groupName.size() <= 120 &&
              isValidGroupCategory(data.category) &&
              data.joinPolicy in ['code_auto', 'admin_approval'] &&
              data.revoked is bool &&
-             isValidId(data.adminId);
+             isValidId(data.adminId) &&
+             data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 64;
     }
 
     function isValidJoinRequest(data) {
       return data.keys().hasAll(['id', 'groupId', 'userId', 'name', 'email', 'inviteCode', 'status', 'createdAt']) &&
+             data.keys().hasOnly([
+               'id', 'groupId', 'userId', 'name', 'email', 'phone',
+               'inviteCode', 'status', 'createdAt', 'reviewedAt', 'reviewedBy'
+             ]) &&
              isValidId(data.id) &&
              isValidId(data.groupId) &&
              isValidId(data.userId) &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
              data.email is string && data.email.size() <= 120 &&
-             data.inviteCode is string && data.inviteCode.size() <= 50 &&
-             data.status in ['pending', 'approved', 'rejected'];
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+             data.inviteCode is string && data.inviteCode.size() > 0 && data.inviteCode.size() <= 50 &&
+             data.status in ['pending', 'approved', 'rejected'] &&
+             data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 64;
     }
 
     function isValidGroupMember(data) {
       return data.keys().hasAll(['id', 'groupId', 'userId', 'name', 'email', 'roleInGroup', 'joinedAt', 'status']) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'linkedUserId', 'joinedViaInvite', 'inviteCodeUsed', 'groupId',
+               'name', 'email', 'phone', 'memberRefId', 'roleInGroup', 'stoveType',
+               'stoveTypeReviewRequired', 'stoveTypeUpdatedAt', 'stoveTypeUpdatedBy',
+               'stoveTypeChangeReason', 'membershipDate', 'joinedAt', 'status',
+               'departedAt', 'departureReason', 'roomNumber', 'notes',
+               'removedAt', 'removalReason', 'suspendedAt', 'suspensionReason',
+               'createdAt', 'updatedAt'
+             ]) &&
              isValidId(data.id) &&
              isValidId(data.groupId) &&
              isValidId(data.userId) &&
+             (!('linkedUserId' in data) || isValidId(data.linkedUserId)) &&
+             (!('inviteCodeUsed' in data) || (data.inviteCodeUsed is string && data.inviteCodeUsed.size() <= 50)) &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
              data.email is string && data.email.size() <= 120 &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+             (!('roomNumber' in data) || (data.roomNumber is string && data.roomNumber.size() <= 50)) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
              data.roleInGroup in ['admin', 'treasurer', 'member'] &&
              data.status in ['active', 'suspended', 'removed', 'departed'] &&
-             (!('stoveType' in data) || data.stoveType == null || data.stoveType in ['electric', 'non_electric']);
+             (!('stoveType' in data) || data.stoveType == null || data.stoveType in ['electric', 'non_electric']) &&
+             data.joinedAt is string && data.joinedAt.size() > 0 && data.joinedAt.size() <= 64;
     }
 
     function isValidContribution(data) {
       return data.keys().hasAll(['id', 'groupId', 'title', 'category', 'totalTargetAmount', 'deadline', 'status', 'createdAt']) &&
+             data.keys().hasOnly([
+               'id', 'groupId', 'title', 'category', 'allocationMode', 'month', 'year',
+               'totalTargetAmount', 'deadline', 'description', 'status', 'rateConfigVersion', 'createdAt'
+             ]) &&
              isValidId(data.id) &&
              isValidId(data.groupId) &&
              data.title is string && data.title.size() > 0 && data.title.size() <= 120 &&
              isValidExpenseCategory(data.category) &&
              (!('allocationMode' in data) || data.allocationMode in ['stove_rate', 'equal', 'custom']) &&
              data.totalTargetAmount is number && data.totalTargetAmount >= 0 &&
-             data.status in ['active', 'closed'];
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             data.status in ['active', 'closed'] &&
+             data.deadline is string && data.deadline.size() <= 64 &&
+             data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 64;
     }
 
     function isValidAssignment(data) {
       return data.keys().hasAll(['id', 'contributionId', 'groupId', 'memberId', 'assignedAmount', 'assignedDate', 'deadline', 'status']) &&
+             data.keys().hasOnly([
+               'id', 'contributionId', 'groupId', 'memberId', 'memberUid', 'assignedAmount',
+               'applicableRate', 'stoveTypeAtAssignment', 'rateConfigVersion',
+               'assignedDate', 'deadline', 'notes', 'status'
+             ]) &&
              isValidId(data.id) &&
              isValidId(data.contributionId) &&
              isValidId(data.groupId) &&
              isValidId(data.memberId) &&
+             (!('memberUid' in data) || isValidId(data.memberUid)) &&
              data.assignedAmount is number && data.assignedAmount > 0 &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 300)) &&
              data.status in ['unpaid', 'partially_paid', 'submitted', 'pending_verification', 'verified', 'rejected', 'disputed', 'reversed', 'overdue', 'fully_settled'] &&
              (!('stoveTypeAtAssignment' in data) || data.stoveTypeAtAssignment == null || data.stoveTypeAtAssignment in ['electric', 'non_electric']);
     }
 
     function isValidPayment(data) {
       return data.keys().hasAll(['id', 'assignmentId', 'groupId', 'memberId', 'amountReceived', 'paymentDate', 'paymentMethod', 'transactionReference', 'collectorId', 'verificationStatus', 'createdAt']) &&
+             data.keys().hasOnly([
+               'id', 'assignmentId', 'contributionId', 'groupId', 'memberId', 'memberUid',
+               'amountReceived', 'paymentDate', 'paymentMethod', 'transactionReference',
+               'idempotencyKey', 'collectorId', 'submittedByMemberId', 'verificationStatus',
+               'rejectionReason', 'verifiedAt', 'verifiedBy', 'reversedAt', 'reversedBy',
+               'reversalReason', 'reversedByPaymentId', 'disputedAt', 'disputedBy',
+               'disputeReason', 'receiptEvidenceUrl', 'receiptImageUrl', 'receiptStoragePath',
+               'receiptNote', 'createdAt'
+             ]) &&
              isValidId(data.id) &&
              isValidId(data.assignmentId) &&
              isValidId(data.groupId) &&
              isValidId(data.memberId) &&
+             (!('memberUid' in data) || isValidId(data.memberUid)) &&
              isValidId(data.collectorId) &&
              data.amountReceived is number && data.amountReceived > 0 &&
              data.paymentMethod in ['airtel_money', 'tnm_mpamba', 'bank_transfer', 'cash', 'other'] &&
              data.transactionReference is string && data.transactionReference.size() > 0 && data.transactionReference.size() <= 100 &&
-             data.verificationStatus in ['submitted', 'pending_verification', 'verified', 'rejected', 'disputed', 'reversed'];
+             (!('receiptNote' in data) || (data.receiptNote is string && data.receiptNote.size() <= 500)) &&
+             (!('receiptStoragePath' in data) || (data.receiptStoragePath is string && data.receiptStoragePath.size() <= 400)) &&
+             (!('receiptImageUrl' in data) || (data.receiptImageUrl is string && data.receiptImageUrl.size() <= 800000)) &&
+             (!('receiptEvidenceUrl' in data) || (data.receiptEvidenceUrl is string && data.receiptEvidenceUrl.size() <= 800000)) &&
+             data.verificationStatus in ['submitted', 'pending_verification', 'verified', 'rejected', 'disputed', 'reversed'] &&
+             data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 64;
     }
 
     function isValidCommitment(data) {
       return data.keys().hasAll(['id', 'assignmentId', 'memberId', 'groupId', 'originalOutstandingAmount', 'currentOutstandingAmount', 'commitmentDate', 'promisedDate', 'collectorId', 'status']) &&
+             data.keys().hasOnly([
+               'id', 'assignmentId', 'memberId', 'memberUid', 'groupId', 'contributionId',
+               'originalOutstandingAmount', 'currentOutstandingAmount', 'amountAlreadyReceived',
+               'commitmentDate', 'promisedDate', 'durationDays', 'collectorId', 'notes',
+               'status', 'memberConfirmed', 'extensionCount', 'completedAt'
+             ]) &&
              isValidId(data.id) &&
              isValidId(data.assignmentId) &&
              isValidId(data.memberId) &&
+             (!('memberUid' in data) || isValidId(data.memberUid)) &&
              isValidId(data.groupId) &&
+             isValidId(data.collectorId) &&
              data.originalOutstandingAmount is number && data.originalOutstandingAmount >= 0 &&
              data.currentOutstandingAmount is number && data.currentOutstandingAmount >= 0 &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
              data.status in ['active', 'due_soon', 'due_today', 'completed', 'overdue', 'extension_requested', 'revised'];
     }
 
     function isValidCommitmentEvent(data) {
       return data.keys().hasAll(['id', 'commitmentId', 'date', 'eventType', 'notes', 'recordedBy']) &&
+             data.keys().hasOnly([
+               'id', 'commitmentId', 'memberUid', 'date', 'eventType',
+               'notes', 'recordedBy', 'newPromisedDate', 'amountPaid'
+             ]) &&
              isValidId(data.id) &&
              isValidId(data.commitmentId) &&
+             (!('memberUid' in data) || isValidId(data.memberUid)) &&
+             isValidId(data.recordedBy) &&
              data.eventType in ['created', 'reminder_sent', 'extension_requested', 'extension_approved', 'extension_declined', 'extension_granted', 'partial_payment', 'completed', 'broken', 'revised'] &&
-             data.notes is string && data.notes.size() > 0 && data.notes.size() <= 500;
+             data.notes is string && data.notes.size() > 0 && data.notes.size() <= 500 &&
+             data.date is string && data.date.size() <= 64;
     }
 
     function isValidExpense(data) {
       return data.keys().hasAll(['id', 'groupId', 'name', 'category', 'amount', 'date', 'responsiblePersonId', 'status', 'createdAt']) &&
+             data.keys().hasOnly([
+               'id', 'groupId', 'name', 'category', 'amount', 'date', 'description',
+               'responsiblePersonId', 'receiptNumber', 'receiptEvidenceUrl',
+               'receiptImageUrl', 'receiptStoragePath', 'paymentReference',
+               'status', 'approvedBy', 'approvedAt', 'createdAt'
+             ]) &&
              isValidId(data.id) &&
              isValidId(data.groupId) &&
+             isValidId(data.responsiblePersonId) &&
              data.amount is number && data.amount > 0 &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
              isValidExpenseCategory(data.category) &&
-             data.status in ['approved', 'pending_approval', 'rejected'];
+             data.status in ['approved', 'pending_approval', 'rejected'] &&
+             data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 64;
     }
 
     function isValidDispute(data) {
       return data.keys().hasAll(['id', 'groupId', 'memberId', 'title', 'description', 'status', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly([
+               'id', 'groupId', 'assignmentId', 'relatedAssignmentId', 'paymentId',
+               'memberId', 'memberUid', 'title', 'description', 'expectedAmount',
+               'paidAmountClaimed', 'claimedAmount', 'evidenceUrl', 'status',
+               'resolutionNote', 'resolvedBy', 'createdAt', 'updatedAt'
+             ]) &&
              isValidId(data.id) &&
              isValidId(data.groupId) &&
              isValidId(data.memberId) &&
+             (!('memberUid' in data) || isValidId(data.memberUid)) &&
              data.title is string && data.title.size() > 0 && data.title.size() <= 150 &&
              data.description is string && data.description.size() > 0 && data.description.size() <= 1000 &&
-             data.status in ['open', 'under_review', 'resolved', 'rejected'];
+             data.status in ['open', 'under_review', 'resolved', 'rejected'] &&
+             data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 64 &&
+             data.updatedAt is string && data.updatedAt.size() > 0 && data.updatedAt.size() <= 64;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['id', 'userId', 'title', 'message', 'category', 'read', 'createdAt']) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'senderId', 'groupId', 'title', 'message',
+               'category', 'read', 'createdAt', 'linkAction', 'linkTab'
+             ]) &&
+             isValidId(data.id) &&
+             isValidId(data.userId) &&
+             (!('senderId' in data) || isValidId(data.senderId)) &&
+             (!('groupId' in data) || isValidId(data.groupId)) &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 150 &&
+             data.message is string && data.message.size() > 0 && data.message.size() <= 500 &&
+             data.category in ['payment', 'commitment', 'deadline', 'expense', 'dispute', 'announcement'] &&
+             data.read is bool &&
+             data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 64;
     }
 
     function isValidAuditLog(data) {
       return data.keys().hasAll(['id', 'actorId', 'actorName', 'action', 'details', 'timestamp']) &&
+             data.keys().hasOnly([
+               'id', 'groupId', 'actorId', 'actorName', 'action', 'targetEntity',
+               'targetId', 'reason', 'beforeValue', 'afterValue', 'details',
+               'timestamp', 'ipAddress', 'securityEvent'
+             ]) &&
              isValidId(data.id) &&
              isValidId(data.actorId) &&
              data.actorName is string && data.actorName.size() > 0 && data.actorName.size() <= 100 &&
              data.action is string && data.action.size() > 0 && data.action.size() <= 100 &&
-             data.details is string && data.details.size() > 0 && data.details.size() <= 1000;
+             data.details is string && data.details.size() > 0 && data.details.size() <= 1000 &&
+             data.timestamp is string && data.timestamp.size() > 0 && data.timestamp.size() <= 64;
     }
 
     function isValidCommunication(data) {
       return data.keys().hasAll(['id', 'groupId', 'subject', 'type', 'targetAudience', 'recipientCount', 'sentAt', 'sentBy']) &&
+             data.keys().hasOnly([
+               'id', 'groupId', 'subject', 'message', 'type', 'targetAudience',
+               'contributionId', 'recipientCount', 'recipients', 'sentAt', 'sentBy', 'deliveredCount'
+             ]) &&
              isValidId(data.id) &&
              isValidId(data.groupId) &&
+             isValidId(data.sentBy) &&
              data.subject is string && data.subject.size() > 0 && data.subject.size() <= 200 &&
+             (!('message' in data) || (data.message is string && data.message.size() <= 2000)) &&
              data.type in ['announcement', 'financial_reminder', 'payment_confirmation', 'deadline_alert', 'cleared_balance'] &&
              data.targetAudience in ['all_active', 'outstanding_only', 'overdue_only', 'paid_only', 'individual'] &&
-             data.recipientCount is number && data.recipientCount >= 0;
+             data.recipientCount is number && data.recipientCount >= 0 &&
+             (!('recipients' in data) || (data.recipients is list && data.recipients.size() <= 200)) &&
+             data.sentAt is string && data.sentAt.size() > 0 && data.sentAt.size() <= 64;
     }
 
-    // Super admin registry (managed server-side only)
+    // Legacy admins collection locked down (no global cross-tenant admin bypass)
     match /admins/{adminId} {
-      allow get: if isOwner(adminId);
-      allow list, write: if false;
+      allow read, write: if false;
     }
 
-    // Non-PII invite code lookup (allows signed-in users to inspect a group invite by exact code)
+    // Non-PII invite code lookup (signed-in users may look up a group invite by exact code)
     match /groupInvites/{inviteCode} {
       allow get: if isValidId(inviteCode) && isSignedIn();
       allow list: if isSignedIn() && resource.data.adminId == request.auth.uid;
       allow create: if isValidId(inviteCode) && isVerifiedAccount() &&
                     isValidGroupInvite(incoming()) &&
                     incoming().inviteCode == inviteCode &&
-                    (isSuperAdmin() || incoming().adminId == request.auth.uid);
+                    incoming().adminId == request.auth.uid &&
+                    existsAfter(/databases/$(database)/documents/groups/$(incoming().groupId)) &&
+                    getAfter(/databases/$(database)/documents/groups/$(incoming().groupId)).data.adminId == request.auth.uid;
       allow update: if isValidId(inviteCode) && isVerifiedAccount() &&
                     isValidGroupInvite(incoming()) &&
                     incoming().inviteCode == existing().inviteCode &&
                     incoming().groupId == existing().groupId &&
-                    (isSuperAdmin() || existing().adminId == request.auth.uid);
+                    incoming().createdAt == existing().createdAt &&
+                    existing().adminId == request.auth.uid &&
+                    incoming().adminId == existing().adminId;
       allow delete: if isValidId(inviteCode) && isVerifiedAccount() &&
-                    (isSuperAdmin() || existing().adminId == request.auth.uid);
+                    existing().adminId == request.auth.uid;
     }
 
-    // Authenticated user profiles (PII protected)
+    // Authenticated user profiles (strict single-owner isolation — no cross-account list/read)
     match /users/{userId} {
-      allow get: if isValidId(userId) && isSignedIn() && (isOwner(userId) || isSuperAdmin());
-      allow list: if isSuperAdminToken();
-      allow create: if isValidId(userId) && isVerifiedAccount() && isValidUser(incoming()) && (
-        isSuperAdmin() ||
-        (isOwner(userId) && incoming().id == userId && incoming().role in ['group_admin', 'treasurer', 'member'])
-      );
-      allow update: if isValidId(userId) && isVerifiedAccount() && isValidUser(incoming()) &&
-                    incoming().id == existing().id && (
-                      isSuperAdmin() ||
-                      (isOwner(userId) && incoming().role == existing().role)
-                    );
-      allow delete: if isValidId(userId) && isSuperAdmin();
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId) && isVerifiedAccount() &&
+                    isOwner(userId) &&
+                    isValidUser(incoming()) &&
+                    incoming().id == userId &&
+                    incoming().role in ['group_admin', 'treasurer', 'member'];
+      allow update: if isValidId(userId) && isVerifiedAccount() &&
+                    isOwner(userId) &&
+                    isValidUser(incoming()) &&
+                    incoming().id == existing().id &&
+                    incoming().role == existing().role &&
+                    incoming().createdAt == existing().createdAt &&
+                    incoming().diff(existing()).affectedKeys().hasOnly([
+                      'name', 'email', 'phone', 'roomNumber', 'avatarUrl', 'preferredLanguage'
+                    ]);
+      allow delete: if false;
 
       match /notifications/{notificationId} {
-        allow get: if isValidId(userId) && isValidId(notificationId) && (isOwner(userId) || isSuperAdmin());
-        allow list: if isOwner(userId) || isSuperAdminToken();
-        allow create: if isValidId(userId) && isValidId(notificationId) && isVerifiedAccount() &&
-                      incoming().userId == userId;
-        allow update: if isValidId(userId) && isValidId(notificationId) && (isOwner(userId) || isSuperAdmin()) &&
-                      incoming().userId == existing().userId;
-        allow delete: if isValidId(userId) && isValidId(notificationId) && (isOwner(userId) || isSuperAdmin());
+        allow get: if isValidId(userId) && isValidId(notificationId) && isOwner(userId);
+        allow list: if isOwner(userId);
+        allow create: if isValidId(userId) && isValidId(notificationId) &&
+                      isVerifiedAccount() &&
+                      isValidNotification(incoming()) &&
+                      incoming().id == notificationId &&
+                      incoming().userId == userId &&
+                      incoming().senderId == request.auth.uid && (
+                        isOwner(userId) ||
+                        (
+                          'groupId' in incoming() &&
+                          (
+                            isGroupManager(incoming().groupId) ||
+                            (
+                              isActiveGroupMember(incoming().groupId) &&
+                              (
+                                userId == groupDoc(incoming().groupId).adminId ||
+                                ('treasurerId' in groupDoc(incoming().groupId) && userId == groupDoc(incoming().groupId).treasurerId)
+                              )
+                            )
+                          )
+                        )
+                      );
+        allow update: if isValidId(userId) && isValidId(notificationId) &&
+                      isOwner(userId) &&
+                      isValidNotification(incoming()) &&
+                      incoming().id == existing().id &&
+                      incoming().userId == existing().userId &&
+                      incoming().createdAt == existing().createdAt &&
+                      incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+        allow delete: if isValidId(userId) && isValidId(notificationId) && isOwner(userId);
       }
     }
 
-    // Shared financial groups & scoped subcollections
+    // Shared financial groups & strictly scoped subcollections
     match /groups/{groupId} {
-      allow get: if isValidId(groupId) && isGroupMember(groupId);
+      allow get: if isValidId(groupId) && isActiveGroupMember(groupId);
       allow list: if isSignedIn() && (
-        isSuperAdminToken() ||
         resource.data.adminId == request.auth.uid ||
         ('treasurerId' in resource.data && resource.data.treasurerId == request.auth.uid) ||
         ('memberUids' in resource.data && request.auth.uid in resource.data.memberUids)
       );
-      allow create: if isValidId(groupId) && isVerifiedAccount() && isValidGroup(incoming()) &&
+      allow create: if isValidId(groupId) && isVerifiedAccount() &&
+                    isValidGroup(incoming()) &&
                     incoming().id == groupId &&
-                    (isSuperAdmin() || incoming().adminId == request.auth.uid);
-      allow update: if isValidId(groupId) && isValidGroup(incoming()) &&
+                    incoming().adminId == request.auth.uid &&
+                    (!('memberUids' in incoming()) || request.auth.uid in incoming().memberUids);
+      allow update: if isValidId(groupId) && isVerifiedAccount() &&
+                    isValidGroup(incoming()) &&
                     (!('id' in existing()) || incoming().id == existing().id) &&
                     (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) && (
-                      isGroupManager(groupId) ||
+                      // Tier 1: Group Admin (full non-immutable updates + ownership transfer)
+                      existing().adminId == request.auth.uid ||
+                      // Tier 2: Group Manager / Treasurer (cannot alter adminId or treasurerId)
                       (
-                        isVerifiedAccount() &&
+                        isGroupManager(groupId) &&
+                        incoming().adminId == existing().adminId
+                      ) ||
+                      // Tier 3: Atomic self-join via verified active group code_auto invite
+                      (
                         (!('joinPolicy' in existing()) || existing().joinPolicy == 'code_auto') &&
                         (!('inviteRevoked' in existing()) || existing().inviteRevoked != true) &&
-                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids', 'memberCount', 'updatedAt']) &&
+                        (!('status' in existing()) || existing().status == 'active') &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberCount', 'updatedAt']) &&
                         ('memberUids' in incoming()) &&
-                        request.auth.uid in incoming().memberUids
+                        request.auth.uid in incoming().memberUids &&
+                        (
+                          !('memberUids' in existing())
+                            ? incoming().memberUids == [request.auth.uid]
+                            : (
+                                !(request.auth.uid in existing().memberUids) &&
+                                incoming().memberUids.hasAll(existing().memberUids) &&
+                                incoming().memberUids.size() == existing().memberUids.size() + 1
+                              )
+                        ) &&
+                        (!('memberCount' in existing()) || incoming().memberCount == existing().memberCount + 1) &&
+                        existsAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)) &&
+                        getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.userId == request.auth.uid &&
+                        getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.roleInGroup == 'member' &&
+                        getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed == existing().joinCode
                       )
                     );
-      allow delete: if isValidId(groupId) && (isSuperAdmin() || (isVerifiedAccount() && existing().adminId == request.auth.uid));
+      allow delete: if isValidId(groupId) && isVerifiedAccount() && existing().adminId == request.auth.uid;
 
       match /joinRequests/{requestId} {
         allow get: if isValidId(groupId) && isValidId(requestId) && (
           isGroupManager(groupId) || (isSignedIn() && requestId == request.auth.uid)
         );
-        allow list: if isValidId(groupId) && (
-          isGroupManager(groupId) || (isSignedIn() && resource.data.userId == request.auth.uid)
+        allow list: if isSignedIn() && (
+          resource.data.userId == request.auth.uid || isGroupManager(groupId)
         );
         allow create: if isValidId(groupId) && isValidId(requestId) && isVerifiedAccount() &&
                       isValidJoinRequest(incoming()) &&
@@ -340,96 +534,143 @@ service cloud.firestore {
                       incoming().id == request.auth.uid &&
                       incoming().userId == request.auth.uid &&
                       incoming().groupId == groupId &&
-                      incoming().status == 'pending';
+                      incoming().status == 'pending' &&
+                      exists(/databases/$(database)/documents/groupInvites/$(incoming().inviteCode)) &&
+                      get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCode)).data.groupId == groupId &&
+                      get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCode)).data.revoked == false;
         allow update: if isValidId(groupId) && isValidId(requestId) && isGroupManager(groupId) &&
                       isValidJoinRequest(incoming()) &&
-                      incoming().groupId == groupId &&
-                      incoming().userId == existing().userId;
+                      incoming().id == existing().id &&
+                      incoming().groupId == existing().groupId &&
+                      incoming().userId == existing().userId &&
+                      incoming().createdAt == existing().createdAt;
         allow delete: if isValidId(groupId) && isValidId(requestId) && (
-          isGroupManager(groupId) || (isSignedIn() && requestId == request.auth.uid)
+          isGroupManager(groupId) || (isVerifiedAccount() && requestId == request.auth.uid)
         );
       }
 
       match /members/{memberId} {
-        allow get: if isValidId(groupId) && isValidId(memberId) && isGroupMember(groupId);
-        allow list: if isValidId(groupId) && isGroupMember(groupId);
-        allow create: if isValidId(groupId) && isValidId(memberId) && isValidGroupMember(incoming()) &&
+        allow get: if isValidId(groupId) && isValidId(memberId) && isActiveGroupMember(groupId);
+        allow list: if isActiveGroupMember(groupId);
+        allow create: if isValidId(groupId) && isValidId(memberId) && isVerifiedAccount() &&
+                      isValidGroupMember(incoming()) &&
+                      incoming().id == memberId &&
                       incoming().groupId == groupId && (
                         isGroupManager(groupId) ||
                         (
-                          isVerifiedAccount() &&
+                          existsAfter(/databases/$(database)/documents/groups/$(groupId)) &&
+                          getAfter(/databases/$(database)/documents/groups/$(groupId)).data.adminId == request.auth.uid
+                        ) ||
+                        (
                           memberId == request.auth.uid &&
                           incoming().userId == request.auth.uid &&
                           incoming().roleInGroup == 'member' &&
                           incoming().status == 'active' &&
-                          exists(/databases/$(database)/documents/groups/$(groupId)) &&
-                          (!('joinPolicy' in get(/databases/$(database)/documents/groups/$(groupId)).data) ||
-                            get(/databases/$(database)/documents/groups/$(groupId)).data.joinPolicy == 'code_auto') &&
-                          (!('inviteRevoked' in get(/databases/$(database)/documents/groups/$(groupId)).data) ||
-                            get(/databases/$(database)/documents/groups/$(groupId)).data.inviteRevoked != true)
+                          ('inviteCodeUsed' in incoming()) &&
+                          groupExists(groupId) &&
+                          (!('joinPolicy' in groupDoc(groupId)) || groupDoc(groupId).joinPolicy == 'code_auto') &&
+                          (!('inviteRevoked' in groupDoc(groupId)) || groupDoc(groupId).inviteRevoked != true) &&
+                          (!('status' in groupDoc(groupId)) || groupDoc(groupId).status == 'active') &&
+                          incoming().inviteCodeUsed == groupDoc(groupId).joinCode &&
+                          request.auth.uid in getAfter(/databases/$(database)/documents/groups/$(groupId)).data.memberUids
                         )
                       );
-        allow update: if isValidId(groupId) && isValidId(memberId) && isValidGroupMember(incoming()) &&
+        allow update: if isValidId(groupId) && isValidId(memberId) && isVerifiedAccount() &&
+                      isValidGroupMember(incoming()) &&
                       (!('id' in existing()) || incoming().id == existing().id) &&
                       (!('groupId' in existing()) || incoming().groupId == existing().groupId) && (
-                        isGroupManager(groupId) ||
+                        isGroupAdmin(groupId) ||
                         (
-                          isVerifiedAccount() &&
-                          !('linkedUserId' in existing()) &&
-                          existing().email == request.auth.token.email &&
-                          incoming().linkedUserId == request.auth.uid &&
-                          incoming().roleInGroup == existing().roleInGroup &&
-                          incoming().status == existing().status &&
-                          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['linkedUserId', 'userId', 'joinedViaInvite', 'updatedAt'])
+                          isGroupManager(groupId) &&
+                          existing().roleInGroup != 'admin' &&
+                          incoming().roleInGroup in ['treasurer', 'member']
                         )
                       );
-        allow delete: if isValidId(groupId) && isValidId(memberId) && isSuperAdmin();
+        allow delete: if false; // Preserve member directory & ledger integrity via soft status
       }
 
       match /contributions/{contributionId} {
-        allow get: if isValidId(groupId) && isValidId(contributionId) && isGroupMember(groupId);
-        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow get: if isValidId(groupId) && isValidId(contributionId) && isActiveGroupMember(groupId);
+        allow list: if isActiveGroupMember(groupId);
         allow create: if isValidId(groupId) && isValidId(contributionId) && isGroupManager(groupId) &&
-                      isValidContribution(incoming()) && incoming().groupId == groupId;
+                      isValidContribution(incoming()) &&
+                      incoming().id == contributionId &&
+                      incoming().groupId == groupId;
         allow update: if isValidId(groupId) && isValidId(contributionId) && isGroupManager(groupId) &&
                       isValidContribution(incoming()) &&
                       (!('id' in existing()) || incoming().id == existing().id) &&
-                      (!('groupId' in existing()) || incoming().groupId == existing().groupId);
-        allow delete: if isValidId(groupId) && isValidId(contributionId) && isGroupManager(groupId);
+                      (!('groupId' in existing()) || incoming().groupId == existing().groupId) &&
+                      (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt);
+        allow delete: if isValidId(groupId) && isValidId(contributionId) && isGroupAdmin(groupId);
       }
 
       match /assignments/{assignmentId} {
-        allow get: if isValidId(groupId) && isValidId(assignmentId) && isGroupMember(groupId);
-        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow get: if isValidId(groupId) && isValidId(assignmentId) && (
+          isGroupManager(groupId) ||
+          (
+            isActiveGroupMember(groupId) && (
+              existing().memberId == request.auth.uid ||
+              ('memberUid' in existing() && existing().memberUid == request.auth.uid)
+            )
+          )
+        );
+        allow list: if isGroupManager(groupId) || (
+          isActiveGroupMember(groupId) && (
+            resource.data.memberId == request.auth.uid ||
+            ('memberUid' in resource.data && resource.data.memberUid == request.auth.uid)
+          )
+        );
         allow create: if isValidId(groupId) && isValidId(assignmentId) && isGroupManager(groupId) &&
-                      isValidAssignment(incoming()) && incoming().groupId == groupId;
-        allow update: if isValidId(groupId) && isValidId(assignmentId) && isValidAssignment(incoming()) &&
+                      isValidAssignment(incoming()) &&
+                      incoming().id == assignmentId &&
+                      incoming().groupId == groupId;
+        allow update: if isValidId(groupId) && isValidId(assignmentId) && isVerifiedAccount() &&
+                      isValidAssignment(incoming()) &&
                       (!('id' in existing()) || incoming().id == existing().id) &&
                       (!('groupId' in existing()) || incoming().groupId == existing().groupId) && (
                         isGroupManager(groupId) ||
                         (
-                          isGroupMember(groupId) &&
-                          isVerifiedAccount() &&
-                          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
+                          isActiveGroupMember(groupId) &&
+                          (existing().memberId == request.auth.uid || ('memberUid' in existing() && existing().memberUid == request.auth.uid)) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
                           incoming().status == 'pending_verification'
                         )
                       );
-        allow delete: if isValidId(groupId) && isValidId(assignmentId) && isGroupManager(groupId);
+        allow delete: if isValidId(groupId) && isValidId(assignmentId) && isGroupAdmin(groupId);
       }
 
       match /payments/{paymentId} {
-        allow get: if isValidId(groupId) && isValidId(paymentId) && isGroupMember(groupId);
-        allow list: if isValidId(groupId) && isGroupMember(groupId);
-        allow create: if isValidId(groupId) && isValidId(paymentId) && isValidPayment(incoming()) &&
+        allow get: if isValidId(groupId) && isValidId(paymentId) && (
+          isGroupManager(groupId) ||
+          (
+            isActiveGroupMember(groupId) && (
+              existing().memberId == request.auth.uid ||
+              ('memberUid' in existing() && existing().memberUid == request.auth.uid) ||
+              existing().collectorId == request.auth.uid
+            )
+          )
+        );
+        allow list: if isGroupManager(groupId) || (
+          isActiveGroupMember(groupId) && (
+            resource.data.memberId == request.auth.uid ||
+            ('memberUid' in resource.data && resource.data.memberUid == request.auth.uid) ||
+            resource.data.collectorId == request.auth.uid
+          )
+        );
+        allow create: if isValidId(groupId) && isValidId(paymentId) && isVerifiedAccount() &&
+                      isValidPayment(incoming()) &&
+                      incoming().id == paymentId &&
                       incoming().groupId == groupId &&
                       incoming().collectorId == request.auth.uid && (
                         isGroupManager(groupId) ||
                         (
-                          isGroupMember(groupId) &&
-                          isVerifiedAccount() &&
+                          isActiveGroupMember(groupId) &&
+                          (incoming().memberId == request.auth.uid || ('memberUid' in incoming() && incoming().memberUid == request.auth.uid)) &&
                           incoming().verificationStatus == 'pending_verification' &&
                           !('verifiedAt' in incoming()) &&
-                          !('verifiedBy' in incoming())
+                          !('verifiedBy' in incoming()) &&
+                          !('reversedAt' in incoming()) &&
+                          !('reversedBy' in incoming())
                         )
                       );
         allow update: if isValidId(groupId) && isValidId(paymentId) && isGroupManager(groupId) &&
@@ -437,69 +678,155 @@ service cloud.firestore {
                       (!('id' in existing()) || incoming().id == existing().id) &&
                       (!('groupId' in existing()) || incoming().groupId == existing().groupId) &&
                       incoming().amountReceived == existing().amountReceived &&
-                      (!('collectorId' in existing()) || incoming().collectorId == existing().collectorId);
+                      incoming().memberId == existing().memberId &&
+                      incoming().assignmentId == existing().assignmentId &&
+                      incoming().paymentMethod == existing().paymentMethod &&
+                      incoming().transactionReference == existing().transactionReference &&
+                      (!('collectorId' in existing()) || incoming().collectorId == existing().collectorId) &&
+                      (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) &&
+                      existing().verificationStatus != 'reversed' &&
+                      incoming().diff(existing()).affectedKeys().hasOnly([
+                        'verificationStatus', 'verifiedAt', 'verifiedBy', 'rejectionReason',
+                        'reversedAt', 'reversedBy', 'reversalReason',
+                        'disputedAt', 'disputedBy', 'disputeReason'
+                      ]);
         allow delete: if false; // Financial ledger records are immutable; reverse via status instead
       }
 
       match /commitments/{commitmentId} {
-        allow get: if isValidId(groupId) && isValidId(commitmentId) && isGroupMember(groupId);
-        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow get: if isValidId(groupId) && isValidId(commitmentId) && (
+          isGroupManager(groupId) ||
+          (
+            isActiveGroupMember(groupId) && (
+              existing().memberId == request.auth.uid ||
+              ('memberUid' in existing() && existing().memberUid == request.auth.uid)
+            )
+          )
+        );
+        allow list: if isGroupManager(groupId) || (
+          isActiveGroupMember(groupId) && (
+            resource.data.memberId == request.auth.uid ||
+            ('memberUid' in resource.data && resource.data.memberUid == request.auth.uid)
+          )
+        );
         allow create: if isValidId(groupId) && isValidId(commitmentId) && isGroupManager(groupId) &&
-                      isValidCommitment(incoming()) && incoming().groupId == groupId;
-        allow update: if isValidId(groupId) && isValidId(commitmentId) && isGroupManager(groupId) &&
+                      isValidCommitment(incoming()) &&
+                      incoming().id == commitmentId &&
+                      incoming().groupId == groupId;
+        allow update: if isValidId(groupId) && isValidId(commitmentId) && isVerifiedAccount() &&
                       isValidCommitment(incoming()) &&
                       (!('id' in existing()) || incoming().id == existing().id) &&
-                      (!('groupId' in existing()) || incoming().groupId == existing().groupId);
-        allow delete: if isValidId(groupId) && isValidId(commitmentId) && isGroupManager(groupId);
+                      (!('groupId' in existing()) || incoming().groupId == existing().groupId) && (
+                        isGroupManager(groupId) ||
+                        (
+                          isActiveGroupMember(groupId) &&
+                          (existing().memberId == request.auth.uid || ('memberUid' in existing() && existing().memberUid == request.auth.uid)) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
+                          incoming().status == 'extension_requested'
+                        )
+                      );
+        allow delete: if isValidId(groupId) && isValidId(commitmentId) && isGroupAdmin(groupId);
       }
 
       match /commitmentEvents/{eventId} {
-        allow get: if isValidId(groupId) && isValidId(eventId) && isGroupMember(groupId);
-        allow list: if isValidId(groupId) && isGroupMember(groupId);
-        allow create: if isValidId(groupId) && isValidId(eventId) && isGroupManager(groupId) &&
-                      isValidCommitmentEvent(incoming());
+        allow get: if isValidId(groupId) && isValidId(eventId) && (
+          isGroupManager(groupId) ||
+          (isActiveGroupMember(groupId) && ('memberUid' in existing()) && existing().memberUid == request.auth.uid)
+        );
+        allow list: if isGroupManager(groupId) || (
+          isActiveGroupMember(groupId) && ('memberUid' in resource.data) && resource.data.memberUid == request.auth.uid
+        );
+        allow create: if isValidId(groupId) && isValidId(eventId) && isVerifiedAccount() &&
+                      isValidCommitmentEvent(incoming()) &&
+                      incoming().id == eventId &&
+                      incoming().recordedBy == request.auth.uid && (
+                        isGroupManager(groupId) ||
+                        (
+                          isActiveGroupMember(groupId) &&
+                          incoming().eventType == 'extension_requested' &&
+                          ('memberUid' in incoming()) &&
+                          incoming().memberUid == request.auth.uid
+                        )
+                      );
         allow update, delete: if false; // Immutable commitment audit log
       }
 
       match /expenses/{expenseId} {
-        allow get: if isValidId(groupId) && isValidId(expenseId) && isGroupMember(groupId);
-        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow get: if isValidId(groupId) && isValidId(expenseId) && isActiveGroupMember(groupId);
+        allow list: if isActiveGroupMember(groupId);
         allow create: if isValidId(groupId) && isValidId(expenseId) && isGroupManager(groupId) &&
-                      isValidExpense(incoming()) && incoming().groupId == groupId;
+                      isValidExpense(incoming()) &&
+                      incoming().id == expenseId &&
+                      incoming().groupId == groupId;
         allow update: if isValidId(groupId) && isValidId(expenseId) && isGroupManager(groupId) &&
                       isValidExpense(incoming()) &&
                       (!('id' in existing()) || incoming().id == existing().id) &&
-                      (!('groupId' in existing()) || incoming().groupId == existing().groupId);
-        allow delete: if isValidId(groupId) && isValidId(expenseId) && isGroupManager(groupId);
+                      (!('groupId' in existing()) || incoming().groupId == existing().groupId) &&
+                      (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt);
+        allow delete: if isValidId(groupId) && isValidId(expenseId) && isGroupAdmin(groupId);
       }
 
       match /disputes/{disputeId} {
-        allow get: if isValidId(groupId) && isValidId(disputeId) && isGroupMember(groupId);
-        allow list: if isValidId(groupId) && isGroupMember(groupId);
-        allow create: if isValidId(groupId) && isValidId(disputeId) && isGroupMember(groupId) &&
-                      isValidDispute(incoming()) && incoming().groupId == groupId;
+        allow get: if isValidId(groupId) && isValidId(disputeId) && (
+          isGroupManager(groupId) ||
+          (
+            isActiveGroupMember(groupId) && (
+              existing().memberId == request.auth.uid ||
+              ('memberUid' in existing() && existing().memberUid == request.auth.uid)
+            )
+          )
+        );
+        allow list: if isGroupManager(groupId) || (
+          isActiveGroupMember(groupId) && (
+            resource.data.memberId == request.auth.uid ||
+            ('memberUid' in resource.data && resource.data.memberUid == request.auth.uid)
+          )
+        );
+        allow create: if isValidId(groupId) && isValidId(disputeId) && isVerifiedAccount() &&
+                      isActiveGroupMember(groupId) &&
+                      isValidDispute(incoming()) &&
+                      incoming().id == disputeId &&
+                      incoming().groupId == groupId && (
+                        isGroupManager(groupId) ||
+                        (
+                          (incoming().memberId == request.auth.uid || ('memberUid' in incoming() && incoming().memberUid == request.auth.uid)) &&
+                          incoming().status == 'open'
+                        )
+                      );
         allow update: if isValidId(groupId) && isValidId(disputeId) && isGroupManager(groupId) &&
                       isValidDispute(incoming()) &&
                       (!('id' in existing()) || incoming().id == existing().id) &&
-                      (!('groupId' in existing()) || incoming().groupId == existing().groupId);
+                      (!('groupId' in existing()) || incoming().groupId == existing().groupId) &&
+                      (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt);
         allow delete: if false; // Immutable dispute history
       }
 
       match /auditLogs/{logId} {
-        allow get: if isValidId(groupId) && isValidId(logId) && isGroupMember(groupId);
-        allow list: if isValidId(groupId) && isGroupMember(groupId);
-        allow create: if isValidId(groupId) && isValidId(logId) && isGroupMember(groupId) &&
-                      isValidAuditLog(incoming());
+        allow get: if isValidId(groupId) && isValidId(logId) && isGroupManager(groupId);
+        allow list: if isGroupManager(groupId);
+        allow create: if isValidId(groupId) && isValidId(logId) && isVerifiedAccount() &&
+                      isValidAuditLog(incoming()) &&
+                      incoming().id == logId &&
+                      incoming().actorId == request.auth.uid && (
+                        isGroupManager(groupId) ||
+                        isActiveGroupMember(groupId) ||
+                        (
+                          existsAfter(/databases/$(database)/documents/groups/$(groupId)) &&
+                          getAfter(/databases/$(database)/documents/groups/$(groupId)).data.adminId == request.auth.uid
+                        )
+                      );
         allow update, delete: if false; // Immutable audit trail
       }
 
       match /communications/{commId} {
-        allow get: if isValidId(groupId) && isValidId(commId) && isGroupMember(groupId);
-        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow get: if isValidId(groupId) && isValidId(commId) && isGroupManager(groupId);
+        allow list: if isGroupManager(groupId);
         allow create: if isValidId(groupId) && isValidId(commId) && isGroupManager(groupId) &&
-                      isValidCommunication(incoming()) && incoming().groupId == groupId;
-        allow update: if false;
-        allow delete: if isValidId(groupId) && isValidId(commId) && isSuperAdmin();
+                      isValidCommunication(incoming()) &&
+                      incoming().id == commId &&
+                      incoming().groupId == groupId &&
+                      incoming().sentBy == request.auth.uid;
+        allow update, delete: if false; // Immutable communication dispatch records
       }
     }
   }

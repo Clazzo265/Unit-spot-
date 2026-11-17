@@ -88,6 +88,117 @@ export function persistStorageWithFallback<T>(
   }
 }
 
+export interface StorageKeysReadable extends StorageLike {
+  length: number;
+  key: (index: number) => string | null;
+  getItem: (key: string) => string | null;
+}
+
+export const ACCOUNT_SCOPED_KEY_PREFIX = 'unitspot_u_';
+
+export const LEGACY_UNSCOPED_PREFIXES = [
+  'unitspot_app_state_',
+  'klarency_app_state_',
+  'klarency_pre_repair_snapshot',
+];
+
+export const ACCOUNT_STATE_SUBKEYS = [
+  'users',
+  'groups',
+  'currentGroup',
+  'groupMembers',
+  'contributions',
+  'assignments',
+  'payments',
+  'commitments',
+  'commitmentEvents',
+  'expenses',
+  'disputes',
+  'joinRequests',
+  'notifications',
+  'auditLogs',
+  'communications',
+  'notificationConfig',
+  'pre_repair_snapshot',
+] as const;
+
+export function getAccountStoragePrefix(uid: string): string {
+  const safeUid = uid.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `${ACCOUNT_SCOPED_KEY_PREFIX}${safeUid}_`;
+}
+
+export function getAccountStorageKey(uid: string, subkey: string): string {
+  return `${getAccountStoragePrefix(uid)}${subkey}`;
+}
+
+function collectStorageKeys(storage: StorageKeysReadable): string[] {
+  const keys: string[] = [];
+  for (let i = 0; i < storage.length; i++) {
+    const k = storage.key(i);
+    if (k) keys.push(k);
+  }
+  return keys;
+}
+
+/**
+ * Removes all legacy unscoped global financial cache keys so an unauthenticated browser
+ * or new account can never hydrate stale data from prior app versions or previous sessions.
+ */
+export function purgeLegacyUnscopedStorage(storage: StorageKeysReadable): number {
+  let removed = 0;
+  for (const key of collectStorageKeys(storage)) {
+    if (LEGACY_UNSCOPED_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      storage.removeItem?.(key);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+/**
+ * Removes all cached financial/account state belonging to a specific UID (on Sign Out / Clear Cache)
+ * or belonging to any OTHER UID (when switching accounts on the same device).
+ */
+export function purgeAccountScopedStorage(
+  storage: StorageKeysReadable,
+  options: { targetUid?: string; preserveUid?: string } = {}
+): number {
+  let removed = 0;
+  const targetPrefix = options.targetUid ? getAccountStoragePrefix(options.targetUid) : null;
+  const preservePrefix = options.preserveUid ? getAccountStoragePrefix(options.preserveUid) : null;
+
+  for (const key of collectStorageKeys(storage)) {
+    if (!key.startsWith(ACCOUNT_SCOPED_KEY_PREFIX)) continue;
+    if (targetPrefix && key.startsWith(targetPrefix)) {
+      storage.removeItem?.(key);
+      removed += 1;
+    } else if (!targetPrefix && (!preservePrefix || !key.startsWith(preservePrefix))) {
+      storage.removeItem?.(key);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+/**
+ * Safely reads JSON from a UID-scoped storage key; never reads unscoped global financial keys.
+ */
+export function readUidScopedStorage<T>(
+  storage: Pick<StorageKeysReadable, 'getItem'>,
+  uid: string | null | undefined,
+  subkey: string,
+  fallback: T
+): T {
+  if (!uid) return fallback;
+  try {
+    const raw = storage.getItem(getAccountStorageKey(uid, subkey));
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 /**
  * Merges incoming Firestore items into an existing collection by unique `id`
  * and optionally sorts the result without mutating inputs.

@@ -65,8 +65,7 @@ export function getEffectiveGroupRole(
   groupMembers: GroupMember[] = []
 ): EffectiveGroupRole {
   if (!user) return 'member';
-  if (user.role === 'super_admin') return 'super_admin';
-  if (!group) return user.role === 'group_admin' ? 'admin' : 'member';
+  if (!group) return user.role === 'group_admin' || user.role === 'super_admin' ? 'admin' : 'member';
 
   if (group.adminId === user.id) return 'admin';
   if (group.treasurerId === user.id) return 'treasurer';

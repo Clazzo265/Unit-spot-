@@ -123,6 +123,7 @@ export interface GroupMember {
   userId: string;
   linkedUserId?: string;
   joinedViaInvite?: boolean;
+  inviteCodeUsed?: string;
   groupId: string;
   name: string;
   email: string;
@@ -231,6 +232,7 @@ export interface ContributionAssignment {
   contributionId: string;
   groupId: string;
   memberId: string; // MemberRecord ID
+  memberUid?: string; // Resolved Firebase Auth UID for rule-enforced scoping
   assignedAmount: number; // integer MWK
   applicableRate?: number; // snapshotted rate in MWK
   stoveTypeAtAssignment?: StoveType;
@@ -247,6 +249,7 @@ export interface Payment {
   contributionId: string;
   groupId: string;
   memberId: string; // MemberRecord ID
+  memberUid?: string; // Resolved Firebase Auth UID for rule-enforced privacy
   amountReceived: number; // integer MWK
   paymentDate: string;
   paymentMethod: PaymentMethod;
@@ -276,6 +279,7 @@ export interface PaymentCommitment {
   id: string;
   assignmentId: string;
   memberId: string;
+  memberUid?: string;
   groupId: string;
   contributionId?: string;
   originalOutstandingAmount: number;
@@ -295,6 +299,7 @@ export interface PaymentCommitment {
 export interface CommitmentEvent {
   id: string;
   commitmentId: string;
+  memberUid?: string;
   date: string;
   eventType:
     | 'created'
@@ -340,6 +345,7 @@ export interface Dispute {
   relatedAssignmentId?: string;
   paymentId?: string;
   memberId: string;
+  memberUid?: string;
   title: string;
   description: string;
   expectedAmount?: number;
@@ -356,6 +362,7 @@ export interface Dispute {
 export interface AppNotification {
   id: string;
   userId: string;
+  senderId?: string;
   groupId?: string;
   title: string;
   message: string;
