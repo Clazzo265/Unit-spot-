@@ -215,6 +215,7 @@ service cloud.firestore {
                'month', 'year', 'totalTargetAmount', 'deadline', 'hasNoDeadline', 'description',
                'responsiblePersonId', 'supportingDocumentUrl', 'supportingDocumentName',
                'supportingDocumentType', 'supportingDocumentSize', 'supportingStoragePath',
+               'supportingEvidenceMode', 'supportingExplanation',
                'status', 'rateConfigVersion', 'createdAt'
              ]) &&
              isValidId(data.id) &&
@@ -232,6 +233,8 @@ service cloud.firestore {
              (!('supportingDocumentType' in data) || (data.supportingDocumentType is string && data.supportingDocumentType.size() <= 100)) &&
              (!('supportingDocumentSize' in data) || (data.supportingDocumentSize is number && data.supportingDocumentSize >= 0)) &&
              (!('supportingStoragePath' in data) || (data.supportingStoragePath is string && data.supportingStoragePath.size() <= 400)) &&
+             (!('supportingEvidenceMode' in data) || data.supportingEvidenceMode in ['document', 'explanation_estimate']) &&
+             (!('supportingExplanation' in data) || (data.supportingExplanation is string && data.supportingExplanation.size() <= 1000)) &&
              data.status in ['active', 'closed'] &&
              data.deadline is string && data.deadline.size() <= 64 &&
              data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 64;

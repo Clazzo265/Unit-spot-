@@ -268,3 +268,45 @@ export function getExpenseCategoryLabel(
   return EXPENSE_CATEGORY_LABELS[category as ExpenseCategory] || String(category || 'Other');
 }
 
+export const BILL_BASED_CONTRIBUTION_CATEGORIES: ExpenseCategory[] = [
+  'electricity',
+  'water',
+  'rent',
+  'internet',
+  'maintenance',
+  'school',
+  'project',
+  'utilities',
+  'security',
+];
+
+export function isBillBasedContributionCategory(category: ExpenseCategory | string): boolean {
+  return BILL_BASED_CONTRIBUTION_CATEGORIES.includes(category as ExpenseCategory);
+}
+
+export interface ContributionEvidenceRequirement {
+  billBased: boolean;
+  label: string;
+  helper: string;
+}
+
+export function getContributionEvidenceRequirement(
+  category: ExpenseCategory | string
+): ContributionEvidenceRequirement {
+  if (isBillBasedContributionCategory(category)) {
+    return {
+      billBased: true,
+      label: 'Supporting Bill, Invoice, or Notice *',
+      helper:
+        'Formal utility, rent, or project bills require attaching the bill, quotation, or official notice (PDF, JPG, JPEG, or PNG).',
+    };
+  }
+  return {
+    billBased: false,
+    label: 'Supporting Document or Cost Explanation',
+    helper:
+      'For everyday group purchases or funds without a formal invoice, you may either attach a photo/quotation OR write a short explanation & estimate for members.',
+  };
+}
+
+

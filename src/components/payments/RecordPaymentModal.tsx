@@ -20,6 +20,7 @@ import {
 import { canVerifyPaymentsRole } from '../../utils/centralizedFinancialAdmin';
 import { Modal } from '../ui/Modal';
 import { FileUploadField, UploadedFileState } from '../ui/FileUploadField';
+import { UploadStatus, isUploadInProgress } from '../../utils/uploadUtils';
 import {
   CheckCircle,
   Clock,
@@ -88,9 +89,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('tnm_mpamba');
   const [transactionReference, setTransactionReference] = useState<string>('');
   const [receiptFile, setReceiptFile] = useState<UploadedFileState | null>(null);
-  const [receiptUploadStatus, setReceiptUploadStatus] = useState<
-    'idle' | 'uploading' | 'uploaded' | 'error'
-  >('idle');
+  const [receiptUploadStatus, setReceiptUploadStatus] = useState<UploadStatus>('idle');
   const [verifyImmediately, setVerifyImmediately] = useState<boolean>(false);
   const [showNotes, setShowNotes] = useState<boolean>(false);
   const [receiptNote, setReceiptNote] = useState<string>('');
@@ -169,8 +168,12 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
     if (isSubmitting) return;
     setError('');
 
-    if (receiptUploadStatus === 'uploading') {
+    if (isUploadInProgress(receiptUploadStatus)) {
       setError('Please wait for your receipt upload to finish before saving.');
+      return;
+    }
+    if (receiptUploadStatus === 'failed') {
+      setError('Your receipt upload failed. Please tap Retry or Remove the failed attachment before saving.');
       return;
     }
 
@@ -836,7 +839,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting || receiptUploadStatus === 'uploading'}
+              disabled={isSubmitting || isUploadInProgress(receiptUploadStatus)}
               className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 text-white px-5 py-2.5 text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
               {isVerifier && verifyImmediately ? (
@@ -845,7 +848,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                 <Upload className="w-4 h-4 text-[#E5B93C] dark:text-white" />
               )}
               <span>
-                {receiptUploadStatus === 'uploading'
+                {isUploadInProgress(receiptUploadStatus)
                   ? 'Uploading Receipt...'
                   : isSubmitting
                     ? 'Saving...'

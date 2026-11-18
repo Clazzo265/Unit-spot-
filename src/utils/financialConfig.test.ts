@@ -579,6 +579,25 @@ describe('Authoritative Financial Config, Integrity Repair, Reversals & RBAC', (
     // Legacy invites without expiry fields never break retroactively
     assert.equal(isInviteExpired(undefined, undefined, fixedNow), false);
   });
+
+  test('12. Bill-based vs informal contribution evidence rules require bills for utilities/rent and allow explanation+estimate for informal purchases', async () => {
+    const { isBillBasedContributionCategory, getContributionEvidenceRequirement } = await import(
+      './groupPresets'
+    );
+
+    assert.equal(isBillBasedContributionCategory('electricity'), true);
+    assert.equal(isBillBasedContributionCategory('water'), true);
+    assert.equal(isBillBasedContributionCategory('rent'), true);
+    assert.equal(isBillBasedContributionCategory('school'), true);
+
+    assert.equal(isBillBasedContributionCategory('groceries'), false);
+    assert.equal(isBillBasedContributionCategory('transport'), false);
+    assert.equal(isBillBasedContributionCategory('event'), false);
+    assert.equal(isBillBasedContributionCategory('savings'), false);
+
+    assert.equal(getContributionEvidenceRequirement('rent').billBased, true);
+    assert.equal(getContributionEvidenceRequirement('groceries').billBased, false);
+  });
 });
 
 

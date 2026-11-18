@@ -144,6 +144,8 @@
         "supportingDocumentType": { "type": "string", "maxLength": 100 },
         "supportingDocumentSize": { "type": "number" },
         "supportingStoragePath": { "type": "string", "maxLength": 400 },
+        "supportingEvidenceMode": { "type": "string", "enum": ["document", "explanation_estimate"] },
+        "supportingExplanation": { "type": "string", "maxLength": 1000 },
         "status": { "type": "string", "enum": ["active", "closed"] },
         "rateConfigVersion": { "type": "string", "maxLength": 30 },
         "createdAt": { "type": "string", "format": "date-time" }

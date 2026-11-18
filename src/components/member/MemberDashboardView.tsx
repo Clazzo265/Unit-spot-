@@ -368,6 +368,12 @@ export const MemberDashboardView: React.FC<{
                           </>
                         )}
                       </div>
+                      {!contrib?.supportingDocumentUrl && contrib?.supportingExplanation && (
+                        <p className="text-[11px] text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-[#11192C] border border-slate-200/80 dark:border-slate-800 rounded-lg px-2.5 py-1.5 mt-1">
+                          <span className="font-semibold text-slate-700 dark:text-slate-200">Cost note: </span>
+                          {contrib.supportingExplanation}
+                        </p>
+                      )}
                     </div>
 
                     <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 tabular-nums">

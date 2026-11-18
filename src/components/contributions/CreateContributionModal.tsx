@@ -18,9 +18,11 @@ import {
   ORDERED_CONTRIBUTION_CATEGORIES,
   getExpenseCategoryLabel,
   getGroupPreset,
+  getContributionEvidenceRequirement,
 } from '../../utils/groupPresets';
 import { Modal } from '../ui/Modal';
 import { FileUploadField, UploadedFileState } from '../ui/FileUploadField';
+import { UploadStatus, isUploadInProgress } from '../../utils/uploadUtils';
 import {
   Plus,
   AlertCircle,
@@ -109,12 +111,11 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
     return d.toISOString().split('T')[0];
   });
   const [hasNoDeadline, setHasNoDeadline] = useState<boolean>(false);
-  const [responsiblePersonId, setResponsiblePersonId] = useState<string>('');
   const [description, setDescription] = useState<string>('');
   const [supportingDoc, setSupportingDoc] = useState<UploadedFileState | null>(null);
-  const [docUploadStatus, setDocUploadStatus] = useState<
-    'idle' | 'uploading' | 'uploaded' | 'error'
-  >('idle');
+  const [docUploadStatus, setDocUploadStatus] = useState<UploadStatus>('idle');
+  const [evidenceMode, setEvidenceMode] = useState<'document' | 'explanation_estimate'>('document');
+  const [supportingExplanation, setSupportingExplanation] = useState<string>('');
 
   const stoveBillingApplicable = useMemo(
     () => isStoveBillingApplicable(currentGroup, category),
@@ -153,6 +154,8 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
     setCategory(defaultCategory);
     setCustomCategoryLabel('');
     setHasNoDeadline(false);
+    setEvidenceMode('document');
+    setSupportingExplanation('');
     const defaultMode: ContributionAllocationMode = isStoveBillingApplicable(
       currentGroup,
       defaultCategory
@@ -162,14 +165,6 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
         ? 'percentage'
         : preset.defaultAllocationMode;
     setAllocationMode(defaultMode);
-
-    const defaultResponsible =
-      currentGroup?.treasurerId ||
-      currentGroup?.adminId ||
-      responsibleCandidates[0]?.member.id ||
-      currentUser?.id ||
-      '';
-    setResponsiblePersonId(defaultResponsible);
 
     const memberIds = activeMembers.map((m) => m.member.id);
     setPercentageInputs(buildStarterPercentages(memberIds));
@@ -212,10 +207,18 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, activeMembers.length, allocationMode, stoveBillingApplicable]);
 
+  const evidenceRequirement = useMemo(
+    () => getContributionEvidenceRequirement(category),
+    [category]
+  );
+
   const handleCategoryChange = (nextCat: ExpenseCategory) => {
     setCategory(nextCat);
     if (nextCat !== 'other') {
       setCustomCategoryLabel('');
+    }
+    if (getContributionEvidenceRequirement(nextCat).billBased) {
+      setEvidenceMode('document');
     }
     const nextStoveApplicable = isStoveBillingApplicable(currentGroup, nextCat);
     if (!nextStoveApplicable && allocationMode === 'stove_rate') {
@@ -436,12 +439,21 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
     }
 
     if (step === 5) {
-      if (docUploadStatus === 'uploading') {
+      if (isUploadInProgress(docUploadStatus)) {
         setError('Please wait for the supporting document upload to finish.');
         return;
       }
-      if (!supportingDoc?.url || docUploadStatus !== 'uploaded') {
-        setError('Please upload a supporting bill, invoice, or notice before publishing.');
+      if (evidenceRequirement.billBased || evidenceMode === 'document') {
+        if (!supportingDoc?.url || docUploadStatus !== 'completed') {
+          setError(
+            evidenceRequirement.billBased
+              ? 'Please upload the supporting bill, invoice, or notice before publishing.'
+              : 'Please upload a supporting file, or switch to "Write Explanation & Estimate".'
+          );
+          return;
+        }
+      } else if (supportingExplanation.trim().length < 10) {
+        setError('Please write a brief cost explanation or estimate (at least 10 characters) for members.');
         return;
       }
       setStep(6);
@@ -453,12 +465,19 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
     if (!currentGroup || isSubmitting) return;
     setError('');
 
-    if (docUploadStatus === 'uploading') {
+    if (isUploadInProgress(docUploadStatus)) {
       setError('Please wait for the supporting document upload to finish.');
       return;
     }
-    if (!supportingDoc?.url || docUploadStatus !== 'uploaded') {
-      setError('A supporting bill, invoice, or notice is required.');
+
+    const useDocumentEvidence = evidenceRequirement.billBased || evidenceMode === 'document';
+    if (useDocumentEvidence) {
+      if (!supportingDoc?.url || docUploadStatus !== 'completed') {
+        setError('A supporting bill, invoice, or notice is required.');
+        return;
+      }
+    } else if (supportingExplanation.trim().length < 10) {
+      setError('Please provide a clear explanation and cost estimate for members.');
       return;
     }
 
@@ -470,6 +489,8 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
 
     setIsSubmitting(true);
     const effectiveDeadline = hasNoDeadline ? '' : `${deadline}T23:59:59Z`;
+    const resolvedCollectorId =
+      currentGroup.treasurerId || currentGroup.adminId || currentUser?.id;
 
     const result = createContribution(
       {
@@ -482,13 +503,15 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
         totalTargetAmount: check.totalTarget,
         deadline: effectiveDeadline,
         hasNoDeadline,
-        responsiblePersonId: responsiblePersonId || undefined,
+        responsiblePersonId: resolvedCollectorId || undefined,
         description: description.trim() || undefined,
-        supportingDocumentUrl: supportingDoc.url,
-        supportingDocumentName: supportingDoc.fileName,
-        supportingDocumentType: supportingDoc.fileType,
-        supportingDocumentSize: supportingDoc.fileSize,
-        supportingStoragePath: supportingDoc.storagePath,
+        supportingEvidenceMode: useDocumentEvidence ? 'document' : 'explanation_estimate',
+        supportingExplanation: useDocumentEvidence ? undefined : supportingExplanation.trim(),
+        supportingDocumentUrl: useDocumentEvidence ? supportingDoc?.url : undefined,
+        supportingDocumentName: useDocumentEvidence ? supportingDoc?.fileName : undefined,
+        supportingDocumentType: useDocumentEvidence ? supportingDoc?.fileType : undefined,
+        supportingDocumentSize: useDocumentEvidence ? supportingDoc?.fileSize : undefined,
+        supportingStoragePath: useDocumentEvidence ? supportingDoc?.storagePath : undefined,
         status: 'active',
         allocationMode,
       },
@@ -526,6 +549,8 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
     setDescription('');
     setSupportingDoc(null);
     setDocUploadStatus('idle');
+    setEvidenceMode('document');
+    setSupportingExplanation('');
     setHasNoDeadline(false);
     onClose();
   };
@@ -645,46 +670,21 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
-                    Category *
-                  </label>
-                  <select
-                    value={category}
-                    onChange={(e) => handleCategoryChange(e.target.value as ExpenseCategory)}
-                    className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
-                  >
-                    {sortedCategories.map((cat) => (
-                      <option key={cat} value={cat}>
-                        {getExpenseCategoryLabel(cat)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
-                    Responsible Collector
-                  </label>
-                  <select
-                    value={responsiblePersonId}
-                    onChange={(e) => setResponsiblePersonId(e.target.value)}
-                    className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
-                  >
-                    {responsibleCandidates.length === 0 ? (
-                      <option value={currentUser?.id || ''}>
-                        {currentUser?.name || 'Group Administrator'}
-                      </option>
-                    ) : (
-                      responsibleCandidates.map(({ member }) => (
-                        <option key={member.id} value={member.id}>
-                          {member.name} ({member.roleInGroup})
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </div>
+              <div>
+                <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
+                  Category *
+                </label>
+                <select
+                  value={category}
+                  onChange={(e) => handleCategoryChange(e.target.value as ExpenseCategory)}
+                  className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
+                >
+                  {sortedCategories.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {getExpenseCategoryLabel(cat)}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               {category === 'other' && (
@@ -753,11 +753,14 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
             </div>
           )}
 
-          {/* STEP 2: Allocation Method */}
+          {/* STEP 2: How should we split the cost? */}
           {step === 2 && (
-            <div className="space-y-3" role="radiogroup" aria-label="Allocation Method">
+            <div className="space-y-3" role="radiogroup" aria-label="How should we split the cost?">
+              <p className="font-semibold text-slate-900 dark:text-white">
+                How should we split the cost?
+              </p>
               <p className="text-slate-600 dark:text-slate-300">
-                Choose how <strong className="text-slate-900 dark:text-white">{title}</strong> should be divided across the {activeMembers.length} active member(s).
+                Choose how <strong className="text-slate-900 dark:text-white">{title}</strong> will be shared across the {activeMembers.length} active member(s).
               </p>
 
               <button
@@ -1021,29 +1024,92 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
             </div>
           )}
 
-          {/* STEP 5: Supporting Document (REQUIRED) */}
+          {/* STEP 5: Supporting Document or Cost Explanation */}
           {step === 5 && (
             <div className="space-y-3">
-              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300">
-                Attach the official bill, supplier quotation, utility token statement, or group notice for full member transparency.
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 leading-relaxed">
+                {evidenceRequirement.helper}
               </div>
-              <FileUploadField
-                label="Supporting Bill / Invoice / Notice * (Required)"
-                helperText="PDF or image (JPG/PNG/WebP), max 5 MB. Required before publishing."
-                folder="supportingDocs"
-                groupId={currentGroup.id}
-                recordIdPrefix="contrib"
-                scopeMeta={{
-                  uploaderUid: currentUser?.id,
-                  adminId: currentGroup.adminId,
-                  treasurerId: currentGroup.treasurerId,
-                }}
-                allowPdf
-                allowCamera
-                value={supportingDoc}
-                onChange={setSupportingDoc}
-                onStatusChange={setDocUploadStatus}
-              />
+
+              {!evidenceRequirement.billBased && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEvidenceMode('document');
+                      setError('');
+                    }}
+                    className={`min-h-[46px] p-3 rounded-xl border text-left transition-colors cursor-pointer ${
+                      evidenceMode === 'document'
+                        ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-blue-600 text-white'
+                        : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#11192C] text-slate-800 dark:text-slate-200'
+                    }`}
+                  >
+                    <div className="font-bold text-xs">Attach Photo / PDF</div>
+                    <div className="text-[11px] opacity-80 mt-0.5">
+                      Shop quotation, receipt, or notice
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEvidenceMode('explanation_estimate');
+                      setError('');
+                    }}
+                    className={`min-h-[46px] p-3 rounded-xl border text-left transition-colors cursor-pointer ${
+                      evidenceMode === 'explanation_estimate'
+                        ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-blue-600 text-white'
+                        : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#11192C] text-slate-800 dark:text-slate-200'
+                    }`}
+                  >
+                    <div className="font-bold text-xs">Write Explanation &amp; Estimate</div>
+                    <div className="text-[11px] opacity-80 mt-0.5">
+                      No formal bill yet (explain planned items)
+                    </div>
+                  </button>
+                </div>
+              )}
+
+              {(evidenceRequirement.billBased || evidenceMode === 'document') ? (
+                <FileUploadField
+                  label={evidenceRequirement.label}
+                  helperText="Accepted: PDF, JPG, JPEG, or PNG (up to 5 MB)."
+                  folder="supportingDocs"
+                  groupId={currentGroup.id}
+                  recordIdPrefix="contrib"
+                  scopeMeta={{
+                    uploaderUid: currentUser?.id,
+                    adminId: currentGroup.adminId,
+                    treasurerId: currentGroup.treasurerId,
+                  }}
+                  allowPdf
+                  allowCamera
+                  value={supportingDoc}
+                  onChange={(next) => {
+                    setSupportingDoc(next);
+                    if (next) setEvidenceMode('document');
+                  }}
+                  onStatusChange={setDocUploadStatus}
+                />
+              ) : (
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                    Cost Explanation &amp; Estimate *
+                  </label>
+                  <textarea
+                    rows={3}
+                    maxLength={1000}
+                    placeholder="Explain how the target will be spent so members know what they are contributing toward (e.g. MK 30,000 for maize flour, cooking oil, and tomatoes agreed for this week)."
+                    value={supportingExplanation}
+                    onChange={(e) => setSupportingExplanation(e.target.value)}
+                    className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 dark:text-slate-200 focus:outline-none"
+                    required
+                  />
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Shown clearly on member dashboards so everyone sees how this amount was estimated.
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
@@ -1080,7 +1146,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
                   </div>
                   <div>
                     <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
-                      Allocation Method
+                      Split Method
                     </span>
                     <span className="font-semibold text-slate-900 dark:text-white">
                       {allocationMode === 'percentage'
@@ -1092,7 +1158,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
                   </div>
                 </div>
 
-                {supportingDoc && (
+                {(evidenceRequirement.billBased || evidenceMode === 'document') && supportingDoc ? (
                   <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
                     <div className="inline-flex items-center gap-1.5 text-slate-700 dark:text-slate-300 truncate">
                       <FileText className="w-3.5 h-3.5 text-blue-600 dark:text-cyan-400 shrink-0" />
@@ -1106,6 +1172,24 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
                       Change file
                     </button>
                   </div>
+                ) : (
+                  supportingExplanation.trim() && (
+                    <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex items-start justify-between gap-2">
+                      <div className="text-slate-700 dark:text-slate-300 min-w-0">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block">
+                          Cost Explanation &amp; Estimate
+                        </span>
+                        <p className="text-xs mt-0.5 leading-snug">{supportingExplanation.trim()}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setStep(5)}
+                        className="text-[11px] font-semibold text-blue-600 dark:text-cyan-400 hover:underline cursor-pointer shrink-0"
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  )
                 )}
               </div>
 
@@ -1170,7 +1254,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
               <button
                 type="button"
                 onClick={handleNextStep}
-                disabled={step === 1 && activeMembers.length === 0}
+                disabled={(step === 1 && activeMembers.length === 0) || (step === 5 && isUploadInProgress(docUploadStatus))}
                 className="min-h-[44px] inline-flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 text-white px-5 py-2.5 text-xs font-bold rounded-xl transition-colors cursor-pointer shadow-xs whitespace-nowrap"
               >
                 <span>Next</span>
@@ -1179,7 +1263,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
             ) : (
               <button
                 type="submit"
-                disabled={isSubmitting || docUploadStatus === 'uploading'}
+                disabled={isSubmitting || isUploadInProgress(docUploadStatus)}
                 className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 text-white px-5 py-2.5 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs whitespace-nowrap"
               >
                 <Plus className="w-4 h-4" />

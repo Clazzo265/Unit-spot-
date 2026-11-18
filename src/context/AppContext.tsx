@@ -75,6 +75,7 @@ import {
   readUidScopedStorage,
 } from '../utils/storageUtils';
 import { AppLanguage, getLocaleStrings, LocaleDictionary } from '../utils/i18n';
+import { formatFriendlyFirestoreError } from '../utils/uploadUtils';
 import {
   auth,
   db,
@@ -87,6 +88,7 @@ import {
   resetPassword,
   resendVerificationEmail,
   reloadCurrentUser,
+  cancelAllActiveUploads,
 } from '../firebase/config';
 import {
   signInWithPopup,
@@ -519,13 +521,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           handleFirestoreError(err, op, `${path}/${docId}`);
         } catch (wrapped) {
           console.warn(wrapped);
-          const msg = err instanceof Error ? err.message : '';
           setActionError(
             offlineNow
               ? 'You are offline. Changes are saved locally and queued.'
-              : onRejected
-                ? `Cloud save rejected (${msg || 'permission or validation error'}). Reverted unsaved record.`
-                : 'Cloud sync error: changes could not sync to Firestore.'
+              : formatFriendlyFirestoreError(err, Boolean(onRejected))
           );
         }
       }
@@ -545,6 +544,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (!fbUser) {
+        cancelAllActiveUploads();
         activeUidRef.current = null;
         resetInMemoryState();
         try {
@@ -564,6 +564,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const uidChanged = activeUidRef.current !== uid;
 
       if (uidChanged) {
+        cancelAllActiveUploads();
         resetInMemoryState();
         try {
           purgeAccountScopedStorage(localStorage, { preserveUid: uid });
@@ -1256,6 +1257,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const signOut = async () => {
     const signingOutUid = activeUidRef.current || firebaseAuthUser?.uid;
     try {
+      cancelAllActiveUploads();
       activeUidRef.current = null;
       resetInMemoryState();
       try {
@@ -2298,8 +2300,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       0
     );
 
+    const resolvedCollectorId =
+      contributionData.responsiblePersonId ||
+      targetGroup?.treasurerId ||
+      targetGroup?.adminId ||
+      currentUser.id;
+
     const newContribution: Contribution = {
       ...contributionData,
+      responsiblePersonId: resolvedCollectorId,
       allocationMode,
       totalTargetAmount: totalTargetSafe || toSafeIntMWK(contributionData.totalTargetAmount),
       id: contributionId,

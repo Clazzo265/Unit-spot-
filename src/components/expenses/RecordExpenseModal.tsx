@@ -11,6 +11,7 @@ import {
 } from '../../utils/groupPresets';
 import { Modal } from '../ui/Modal';
 import { FileUploadField, UploadedFileState } from '../ui/FileUploadField';
+import { UploadStatus, isUploadInProgress } from '../../utils/uploadUtils';
 import { Plus, AlertCircle, CheckCircle } from 'lucide-react';
 
 interface RecordExpenseModalProps {
@@ -37,7 +38,7 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
   const [description, setDescription] = useState<string>('');
   const [receiptNumber, setReceiptNumber] = useState<string>('');
   const [uploadedReceipt, setUploadedReceipt] = useState<UploadedFileState | null>(null);
-  const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'uploaded' | 'error'>('idle');
+  const [uploadStatus, setUploadStatus] = useState<UploadStatus>('idle');
   const [error, setError] = useState<string>('');
   const [success, setSuccess] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -64,8 +65,12 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
     if (!currentGroup || !currentUser || isSubmitting) return;
     setError('');
 
-    if (uploadStatus === 'uploading') {
+    if (isUploadInProgress(uploadStatus)) {
       setError('Please wait for the receipt file upload to finish before saving.');
+      return;
+    }
+    if (uploadStatus === 'failed') {
+      setError('Receipt upload failed. Please tap Retry or Remove the attachment before saving.');
       return;
     }
 
@@ -317,12 +322,12 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={uploadStatus === 'uploading' || isSubmitting}
+              disabled={isUploadInProgress(uploadStatus) || isSubmitting}
               className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 text-white px-5 py-2 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               <span>
-                {uploadStatus === 'uploading'
+                {isUploadInProgress(uploadStatus)
                   ? 'Uploading receipt...'
                   : isSubmitting
                     ? 'Saving...'

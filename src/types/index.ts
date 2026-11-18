@@ -236,6 +236,8 @@ export interface Contribution {
   supportingDocumentType?: string;
   supportingDocumentSize?: number;
   supportingStoragePath?: string;
+  supportingEvidenceMode?: 'document' | 'explanation_estimate';
+  supportingExplanation?: string;
   status: 'active' | 'closed';
   rateConfigVersion?: string;
   createdAt: string;

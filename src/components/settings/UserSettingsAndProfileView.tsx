@@ -5,6 +5,7 @@ import { canManageGroupRole } from '../../utils/centralizedFinancialAdmin';
 import { Modal } from '../ui/Modal';
 import { FileUploadField, UploadedFileState } from '../ui/FileUploadField';
 import { updateFirebaseProfileAvatar } from '../../firebase/config';
+import { UploadStatus, isUploadInProgress } from '../../utils/uploadUtils';
 import {
   CheckCircle2,
   RotateCcw,
@@ -45,6 +46,7 @@ export const UserSettingsAndProfileView: React.FC = () => {
   const [phone, setPhone] = useState(currentUser?.phone || '');
   const [roomNumber, setRoomNumber] = useState(currentUser?.roomNumber || '');
   const [avatarUpload, setAvatarUpload] = useState<UploadedFileState | null>(null);
+  const [avatarUploadStatus, setAvatarUploadStatus] = useState<UploadStatus>('idle');
   const [savedSuccess, setSavedSuccess] = useState(false);
 
   const [auditSearch, setAuditSearch] = useState('');
@@ -213,13 +215,14 @@ export const UserSettingsAndProfileView: React.FC = () => {
             <div className="flex-1 min-w-0">
               <FileUploadField
                 label="Profile Photo (Optional)"
-                helperText="Upload a profile photo (JPG, PNG, or WebP up to 5 MB), then tap Save Profile."
+                helperText="Upload a profile photo (JPG, JPEG, or PNG up to 5 MB), then tap Save Profile."
                 folder="avatars"
                 recordIdPrefix={`avatar_${currentUser.id}`}
                 allowPdf={false}
                 allowCamera
                 value={avatarUpload}
                 onChange={setAvatarUpload}
+                onStatusChange={setAvatarUploadStatus}
               />
             </div>
           </div>
@@ -295,9 +298,10 @@ export const UserSettingsAndProfileView: React.FC = () => {
           <div className="pt-2 flex justify-end">
             <button
               type="submit"
-              className="min-h-[44px] bg-slate-900 hover:bg-black dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-5 py-2 font-bold rounded-xl text-xs transition-colors cursor-pointer"
+              disabled={isUploadInProgress(avatarUploadStatus)}
+              className="min-h-[44px] bg-slate-900 hover:bg-black dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 text-white px-5 py-2 font-bold rounded-xl text-xs transition-colors cursor-pointer"
             >
-              Save Profile Changes
+              {isUploadInProgress(avatarUploadStatus) ? 'Uploading Photo...' : 'Save Profile Changes'}
             </button>
           </div>
         </form>

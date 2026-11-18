@@ -414,23 +414,23 @@ export const MainDashboardView: React.FC<{
         </div>
       )}
 
-      {/* Primary Financial Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 tabular-nums">
+      {/* Primary Plain-Language Financial Summary Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 tabular-nums">
         <div className="bg-white dark:bg-[#0D1424] rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
           <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-            Total Expected
+            Total Requested
           </span>
           <div className="text-2xl font-black text-slate-900 dark:text-white mt-1 tracking-tight font-mono">
             {formatMWK(summary.totalExpected)}
           </div>
           <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">
-            {groupAssignments.length} assigned obligations
+            {groupAssignments.length} assigned member shares
           </div>
         </div>
 
         <div className="bg-white dark:bg-[#0D1424] rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
           <span className="text-xs font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
-            Verified Inflow
+            Verified Paid
           </span>
           <div className="text-2xl font-black text-slate-900 dark:text-white mt-1 tracking-tight font-mono">
             {formatMWK(summary.totalVerified)}
@@ -445,9 +445,9 @@ export const MainDashboardView: React.FC<{
             <div className="flex items-center gap-1.5 text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
               <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
               <span>
-                {collectionPct}% collected
+                {collectionPct}% verified
                 {summary.totalOverpaid > 0
-                  ? ` · +${formatMWK(summary.totalOverpaid)} overpaid`
+                  ? ` · +${formatMWK(summary.totalOverpaid)} extra`
                   : ''}
               </span>
             </div>
@@ -455,8 +455,23 @@ export const MainDashboardView: React.FC<{
         </div>
 
         <div className="bg-white dark:bg-[#0D1424] rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
+          <span className="text-xs font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+            Waiting Check
+          </span>
+          <div className="text-2xl font-black text-slate-900 dark:text-white mt-1 tracking-tight font-mono">
+            {formatMWK(summary.totalPendingVerification)}
+          </div>
+          <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 mt-2">
+            <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span>
+              {pendingProofsCount} payment proof{pendingProofsCount === 1 ? '' : 's'} not yet verified
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-[#0D1424] rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
           <span className="text-xs font-bold uppercase tracking-wider text-rose-700 dark:text-rose-400">
-            Outstanding Balance
+            Still to Pay
           </span>
           <div className="text-2xl font-black text-slate-900 dark:text-white mt-1 tracking-tight font-mono">
             {formatMWK(summary.totalOutstanding)}
@@ -471,7 +486,19 @@ export const MainDashboardView: React.FC<{
 
         <div className="bg-white dark:bg-[#0D1424] rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
           <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-            Remaining Group Funds
+            Money Spent
+          </span>
+          <div className="text-2xl font-black text-slate-900 dark:text-white mt-1 tracking-tight font-mono">
+            {formatMWK(summary.totalExpensesApproved)}
+          </div>
+          <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">
+            Approved group expenses
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-[#0D1424] rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs">
+          <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+            Available Balance
           </span>
           <div
             className={`text-2xl font-black mt-1 tracking-tight font-mono ${
@@ -483,7 +510,7 @@ export const MainDashboardView: React.FC<{
             {formatSignedMWK(summary.remainingGroupFunds)}
           </div>
           <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">
-            Approved expenses: {formatMWK(summary.totalExpensesApproved)}
+            Verified paid minus money spent
           </div>
         </div>
       </div>

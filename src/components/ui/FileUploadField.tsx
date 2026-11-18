@@ -9,9 +9,24 @@ import {
   Upload,
   AlertCircle,
   Loader2,
+  Pause,
+  Play,
   X,
+  WifiOff,
 } from 'lucide-react';
-import { formatFileSize, uploadFileToCloudStorage, UploadedFileMetadata } from '../../firebase/config';
+import {
+  formatFileSize,
+  uploadFileToCloudStorage,
+  UploadedFileMetadata,
+  UploadTaskController,
+} from '../../firebase/config';
+import {
+  UploadStatus,
+  MAX_UPLOAD_SIZE_BYTES,
+  validateUploadFile,
+  isUploadInProgress,
+  getUploadStatusLabel,
+} from '../../utils/uploadUtils';
 
 export interface UploadedFileState {
   url: string;
@@ -33,17 +48,21 @@ interface FileUploadFieldProps {
   allowCamera?: boolean;
   value: UploadedFileState | null;
   onChange: (next: UploadedFileState | null) => void;
-  onStatusChange?: (status: 'idle' | 'uploading' | 'uploaded' | 'error') => void;
+  onStatusChange?: (status: UploadStatus) => void;
 }
 
 /**
- * Resize large camera photos cleanly before upload when over ~1.2MB while preserving PDFs untouched.
+ * Compress large mobile camera photos cleanly while keeping receipt numbers & names readable.
+ * Leaves PDFs and normal-sized images (< 850 KB) untouched.
  */
-async function prepareFileForUpload(file: File): Promise<{ blob: Blob; contentType: string; fileName: string }> {
-  if (!file.type.startsWith('image/') || file.size <= 900 * 1024) {
+async function prepareFileForUpload(
+  file: File,
+  normalizedType: 'application/pdf' | 'image/jpeg' | 'image/png'
+): Promise<{ blob: Blob; contentType: string; fileName: string }> {
+  if (normalizedType === 'application/pdf' || file.size <= 850 * 1024) {
     return {
       blob: file,
-      contentType: file.type || 'application/octet-stream',
+      contentType: normalizedType,
       fileName: file.name,
     };
   }
@@ -71,7 +90,7 @@ async function prepareFileForUpload(file: File): Promise<{ blob: Blob; contentTy
         const ctx = canvas.getContext('2d');
         if (!ctx) {
           URL.revokeObjectURL(objectUrl);
-          resolve({ blob: file, contentType: file.type || 'image/jpeg', fileName: file.name });
+          resolve({ blob: file, contentType: normalizedType, fileName: file.name });
           return;
         }
         ctx.drawImage(img, 0, 0, width, height);
@@ -82,7 +101,7 @@ async function prepareFileForUpload(file: File): Promise<{ blob: Blob; contentTy
               const renamed = file.name.replace(/\.[^.]+$/, '') + '.jpg';
               resolve({ blob: compressedBlob, contentType: 'image/jpeg', fileName: renamed });
             } else {
-              resolve({ blob: file, contentType: file.type || 'image/jpeg', fileName: file.name });
+              resolve({ blob: file, contentType: normalizedType, fileName: file.name });
             }
           },
           'image/jpeg',
@@ -90,12 +109,12 @@ async function prepareFileForUpload(file: File): Promise<{ blob: Blob; contentTy
         );
       } catch {
         URL.revokeObjectURL(objectUrl);
-        resolve({ blob: file, contentType: file.type || 'image/jpeg', fileName: file.name });
+        resolve({ blob: file, contentType: normalizedType, fileName: file.name });
       }
     };
     img.onerror = () => {
       URL.revokeObjectURL(objectUrl);
-      resolve({ blob: file, contentType: file.type || 'image/jpeg', fileName: file.name });
+      resolve({ blob: file, contentType: normalizedType, fileName: file.name });
     };
     img.src = objectUrl;
   });
@@ -116,59 +135,137 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
-  const cancelRef = useRef<(() => void) | null>(null);
+  const taskControllerRef = useRef<UploadTaskController | null>(null);
+  const localPreviewRef = useRef<string | null>(null);
+  const isMountedRef = useRef<boolean>(true);
+  const uploadRunIdRef = useRef<number>(0);
 
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [localPreview, setLocalPreview] = useState<string | null>(null);
-  const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'uploaded' | 'error'>(
-    value ? 'uploaded' : 'idle'
+  const [uploadStatus, setUploadStatus] = useState<UploadStatus>(
+    value ? 'completed' : 'idle'
   );
   const [progressPct, setProgressPct] = useState<number>(value ? 100 : 0);
   const [errorMsg, setErrorMsg] = useState<string>('');
+  const [isOnline, setIsOnline] = useState<boolean>(
+    typeof navigator === 'undefined' ? true : navigator.onLine
+  );
+
+  const updateStatus = (next: UploadStatus) => {
+    setUploadStatus(next);
+    onStatusChange?.(next);
+  };
 
   useEffect(() => {
     if (value && uploadStatus === 'idle') {
-      setUploadStatus('uploaded');
+      setUploadStatus('completed');
       setProgressPct(100);
     }
-    if (!value && uploadStatus === 'uploaded') {
+    if (!value && uploadStatus === 'completed') {
       setUploadStatus('idle');
       setProgressPct(0);
     }
   }, [value, uploadStatus]);
 
+  // Network awareness during uploads
   useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
     return () => {
-      if (localPreview && localPreview.startsWith('blob:')) {
-        URL.revokeObjectURL(localPreview);
-      }
-      cancelRef.current?.();
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
     };
-  }, [localPreview]);
+  }, []);
 
-  const acceptTypes = allowPdf ? 'image/*,application/pdf' : 'image/*';
+  // Cleanup active Storage upload & preview URL ONLY on true component unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      taskControllerRef.current?.cancel();
+      taskControllerRef.current = null;
+      if (localPreviewRef.current && localPreviewRef.current.startsWith('blob:')) {
+        URL.revokeObjectURL(localPreviewRef.current);
+      }
+    };
+  }, []);
 
-  const startUpload = async (file: File) => {
+  const acceptTypes = allowPdf
+    ? 'application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png'
+    : 'image/jpeg,image/png,.jpg,.jpeg,.png';
+
+  const startUpload = async (file: File, isRetry = false) => {
+    const runId = ++uploadRunIdRef.current;
+
+    // Cancel any previous task before starting the next
+    taskControllerRef.current?.cancel();
+    taskControllerRef.current = null;
+
     setPendingFile(file);
     setErrorMsg('');
     setProgressPct(0);
-    setUploadStatus('uploading');
-    onStatusChange?.('uploading');
+
+    // Pre-preparation validation (checks PDF/JPG/JPEG/PNG format & size before preparation)
+    const preCheck = validateUploadFile({
+      fileName: file.name,
+      fileType: file.type,
+      fileSize: file.size,
+      allowPdf,
+      maxSizeBytes: MAX_UPLOAD_SIZE_BYTES,
+      prePreparation: true,
+    });
+
+    if (!preCheck.valid || !preCheck.normalizedType) {
+      updateStatus('failed');
+      setErrorMsg(preCheck.error || 'Unsupported file.');
+      onChange(null);
+      return;
+    }
+
+    updateStatus(isRetry ? 'retrying' : 'preparing');
 
     let previewUrl: string | undefined;
-    if (file.type.startsWith('image/')) {
+    if (preCheck.isImage) {
       previewUrl = URL.createObjectURL(file);
-      setLocalPreview((prev) => {
-        if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
-        return previewUrl!;
-      });
+      if (localPreviewRef.current && localPreviewRef.current.startsWith('blob:')) {
+        URL.revokeObjectURL(localPreviewRef.current);
+      }
+      localPreviewRef.current = previewUrl;
+      setLocalPreview(previewUrl);
     } else {
+      if (localPreviewRef.current && localPreviewRef.current.startsWith('blob:')) {
+        URL.revokeObjectURL(localPreviewRef.current);
+      }
+      localPreviewRef.current = null;
       setLocalPreview(null);
     }
 
     try {
-      const prepared = await prepareFileForUpload(file);
+      const prepared = await prepareFileForUpload(file, preCheck.normalizedType);
+
+      if (!isMountedRef.current || uploadRunIdRef.current !== runId) return;
+
+      const postCheck = validateUploadFile({
+        fileName: prepared.fileName,
+        fileType: prepared.contentType,
+        fileSize: prepared.blob.size,
+        allowPdf,
+        maxSizeBytes: MAX_UPLOAD_SIZE_BYTES,
+        prePreparation: false,
+      });
+
+      if (!postCheck.valid) {
+        updateStatus('failed');
+        setErrorMsg(postCheck.error || 'File exceeds 5 MB maximum upload size.');
+        onChange(null);
+        return;
+      }
+
+      updateStatus('uploading');
       const recordId = `${recordIdPrefix}_${Date.now()}`;
+
       const result: UploadedFileMetadata = await uploadFileToCloudStorage({
         folder,
         groupId,
@@ -176,17 +273,34 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
         file: prepared.blob,
         fileName: prepared.fileName,
         contentType: prepared.contentType,
+        maxSizeBytes: MAX_UPLOAD_SIZE_BYTES,
         scopeMeta,
-        onProgress: (pct) => setProgressPct(pct),
-        onTaskCreated: (cancel) => {
-          cancelRef.current = cancel;
+        onProgress: (pct) => {
+          if (isMountedRef.current && uploadRunIdRef.current === runId) {
+            setProgressPct(pct);
+          }
+        },
+        onStateChange: (nextStatus, pct) => {
+          if (!isMountedRef.current || uploadRunIdRef.current !== runId) return;
+          setProgressPct(pct);
+          if (nextStatus === 'paused' || nextStatus === 'uploading') {
+            updateStatus(nextStatus);
+          }
+        },
+        onTaskCreated: (controller) => {
+          if (uploadRunIdRef.current === runId) {
+            taskControllerRef.current = controller;
+          } else {
+            controller.cancel();
+          }
         },
       });
 
-      cancelRef.current = null;
-      setUploadStatus('uploaded');
+      if (!isMountedRef.current || uploadRunIdRef.current !== runId) return;
+
+      taskControllerRef.current = null;
       setProgressPct(100);
-      onStatusChange?.('uploaded');
+      updateStatus('completed');
       onChange({
         url: result.url,
         storagePath: result.storagePath,
@@ -196,11 +310,12 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
         previewUrl: previewUrl || (result.fileType.startsWith('image/') ? result.url : undefined),
       });
     } catch (err) {
-      cancelRef.current = null;
+      if (!isMountedRef.current || uploadRunIdRef.current !== runId) return;
+      taskControllerRef.current = null;
       const msg = err instanceof Error ? err.message : 'File upload failed.';
-      setUploadStatus('error');
-      setErrorMsg(msg);
-      onStatusChange?.('error');
+      const wasCancelled = msg.toLowerCase().includes('cancelled');
+      updateStatus(wasCancelled ? 'cancelled' : 'failed');
+      setErrorMsg(wasCancelled ? 'Upload cancelled. Tap Retry or choose another file.' : msg);
       onChange(null);
     }
   };
@@ -209,48 +324,73 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    void startUpload(file);
+    void startUpload(file, false);
+  };
+
+  const handlePauseToggle = () => {
+    if (!taskControllerRef.current) return;
+    if (uploadStatus === 'paused') {
+      taskControllerRef.current.resume();
+      updateStatus('uploading');
+    } else if (uploadStatus === 'uploading') {
+      taskControllerRef.current.pause();
+      updateStatus('paused');
+    }
   };
 
   const handleCancelUpload = () => {
-    cancelRef.current?.();
-    cancelRef.current = null;
-    setUploadStatus('idle');
+    uploadRunIdRef.current += 1;
+    taskControllerRef.current?.cancel();
+    taskControllerRef.current = null;
     setProgressPct(0);
-    setPendingFile(null);
-    setErrorMsg('');
-    onStatusChange?.('idle');
+    updateStatus('cancelled');
+    setErrorMsg('Upload cancelled. Tap Retry to upload again or choose another file.');
     onChange(null);
   };
 
   const handleRemove = () => {
-    cancelRef.current?.();
-    cancelRef.current = null;
+    uploadRunIdRef.current += 1;
+    taskControllerRef.current?.cancel();
+    taskControllerRef.current = null;
     setPendingFile(null);
-    if (localPreview && localPreview.startsWith('blob:')) {
-      URL.revokeObjectURL(localPreview);
+    if (localPreviewRef.current && localPreviewRef.current.startsWith('blob:')) {
+      URL.revokeObjectURL(localPreviewRef.current);
     }
+    localPreviewRef.current = null;
     setLocalPreview(null);
-    setUploadStatus('idle');
     setProgressPct(0);
     setErrorMsg('');
-    onStatusChange?.('idle');
+    updateStatus('idle');
     onChange(null);
   };
 
+  const inProgress = isUploadInProgress(uploadStatus);
   const displayName = value?.fileName || pendingFile?.name || 'Attached file';
   const displaySize = value?.fileSize ?? pendingFile?.size ?? 0;
   const displayType = value?.fileType || pendingFile?.type || '';
   const isPdf = displayType === 'application/pdf' || displayName.toLowerCase().endsWith('.pdf');
   const displayPreview = value?.previewUrl || localPreview || (value?.url && !isPdf ? value.url : null);
+  const showCard = uploadStatus !== 'idle' || Boolean(value);
 
   return (
     <div className="space-y-2">
-      <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300">
-        {label}
-      </label>
+      <div className="flex items-center justify-between gap-2">
+        <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300">
+          {label}
+        </label>
+        <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500">
+          {allowPdf ? 'PDF, JPG, JPEG, PNG · Max 5 MB' : 'JPG, JPEG, PNG · Max 5 MB'}
+        </span>
+      </div>
 
-      {uploadStatus === 'idle' && !value && (
+      {!isOnline && (
+        <div className="rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 px-3 py-2 text-[11px] text-amber-900 dark:text-amber-200 flex items-center gap-2">
+          <WifiOff className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+          <span>You appear offline. Reconnect before uploading or tap Retry when internet returns.</span>
+        </div>
+      )}
+
+      {!showCard && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           {allowCamera && (
             <button
@@ -270,12 +410,12 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
             }`}
           >
             <Upload className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-            <span>{allowPdf ? 'Choose File / PDF' : 'Choose Image'}</span>
+            <span>{allowPdf ? 'Choose Photo / PDF' : 'Choose Image'}</span>
           </button>
         </div>
       )}
 
-      {(uploadStatus === 'uploading' || uploadStatus === 'uploaded' || uploadStatus === 'error' || value) && (
+      {showCard && (
         <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#11192C] p-3 space-y-2.5">
           <div className="flex items-start gap-3">
             {displayPreview ? (
@@ -293,15 +433,36 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-bold text-slate-900 dark:text-white truncate">{displayName}</p>
-                {uploadStatus === 'uploading' ? (
-                  <button
-                    type="button"
-                    onClick={handleCancelUpload}
-                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-600 dark:text-rose-400 hover:underline shrink-0 cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                    <span>Cancel</span>
-                  </button>
+                {inProgress ? (
+                  <div className="flex items-center gap-2 shrink-0">
+                    {(uploadStatus === 'uploading' || uploadStatus === 'paused') && (
+                      <button
+                        type="button"
+                        onClick={handlePauseToggle}
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 dark:text-cyan-400 hover:underline cursor-pointer"
+                      >
+                        {uploadStatus === 'paused' ? (
+                          <>
+                            <Play className="w-3 h-3" />
+                            <span>Resume</span>
+                          </>
+                        ) : (
+                          <>
+                            <Pause className="w-3 h-3" />
+                            <span>Pause</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleCancelUpload}
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>Cancel</span>
+                    </button>
+                  </div>
                 ) : (
                   <div className="flex items-center gap-2 shrink-0">
                     <button
@@ -329,34 +490,38 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
                 {displaySize > 0 ? ` · ${formatFileSize(displaySize)}` : ''}
               </p>
 
-              {uploadStatus === 'uploading' && (
+              {inProgress && (
                 <div className="mt-2 space-y-1">
                   <div className="flex items-center justify-between text-[11px] font-semibold text-blue-700 dark:text-cyan-300">
                     <span className="inline-flex items-center gap-1.5">
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                      Uploading to cloud storage...
+                      {uploadStatus !== 'paused' && <Loader2 className="w-3 h-3 animate-spin" />}
+                      <span>{getUploadStatusLabel(uploadStatus, progressPct)}</span>
                     </span>
                     <span className="font-mono tabular-nums">{progressPct}%</span>
                   </div>
                   <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-blue-600 dark:bg-cyan-500 transition-all duration-150"
+                      className={`h-full transition-all duration-150 ${
+                        uploadStatus === 'paused'
+                          ? 'bg-amber-500'
+                          : 'bg-blue-600 dark:bg-cyan-500'
+                      }`}
                       style={{ width: `${progressPct}%` }}
                     />
                   </div>
                 </div>
               )}
 
-              {uploadStatus === 'uploaded' && value && (
+              {uploadStatus === 'completed' && value && (
                 <div className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
                   <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                  <span>Uploaded cleanly to cloud storage</span>
+                  <span>Upload completed</span>
                 </div>
               )}
             </div>
           </div>
 
-          {uploadStatus === 'error' && errorMsg && (
+          {(uploadStatus === 'failed' || uploadStatus === 'cancelled') && errorMsg && (
             <div
               role="alert"
               className="rounded-lg bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 px-3 py-2 text-[11px] text-rose-800 dark:text-rose-200 flex items-start justify-between gap-2"
@@ -368,7 +533,7 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
               {pendingFile && (
                 <button
                   type="button"
-                  onClick={() => void startUpload(pendingFile)}
+                  onClick={() => void startUpload(pendingFile, true)}
                   className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] shrink-0 cursor-pointer"
                 >
                   <RefreshCw className="w-3 h-3" />
@@ -395,7 +560,7 @@ export const FileUploadField: React.FC<FileUploadFieldProps> = ({
         <input
           ref={cameraInputRef}
           type="file"
-          accept="image/*"
+          accept="image/jpeg,image/png,.jpg,.jpeg,.png"
           capture="environment"
           onChange={handleFileSelected}
           className="hidden"

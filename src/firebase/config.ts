@@ -22,8 +22,17 @@ import {
   ref as storageRef,
   uploadBytesResumable,
   getDownloadURL,
+  UploadTask,
 } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
+import {
+  UploadStatus,
+  MAX_UPLOAD_SIZE_BYTES,
+  classifyStorageError,
+  computeUploadProgressPct,
+  formatUploadFileSize,
+  validateUploadFile,
+} from '../utils/uploadUtils';
 
 // Initialize Firebase App
 export const app = initializeApp(firebaseConfig);
@@ -35,8 +44,10 @@ export const googleProvider = new GoogleAuthProvider();
 // Initialize Firestore with specific database ID from config
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 
-// Initialize Firebase Storage for receipts
+// Initialize Firebase Storage with resilient retry windows (no arbitrary 30s transfer cutoff)
 export const storage = getStorage(app);
+storage.maxUploadRetryTime = 600_000; // 10 minutes
+storage.maxOperationRetryTime = 180_000; // 3 minutes
 
 export {
   signInWithPopup,
@@ -102,6 +113,12 @@ export interface UploadedFileMetadata {
   uploadedToCloud: true;
 }
 
+export interface UploadTaskController {
+  pause: () => boolean;
+  resume: () => boolean;
+  cancel: () => boolean;
+}
+
 export interface FileUploadOptions {
   folder: 'receipts' | 'supportingDocs' | 'avatars';
   groupId?: string;
@@ -112,41 +129,33 @@ export interface FileUploadOptions {
   maxSizeBytes?: number;
   scopeMeta?: { uploaderUid?: string; adminId?: string; treasurerId?: string };
   onProgress?: (pct: number) => void;
-  onTaskCreated?: (cancel: () => void) => void;
+  onStateChange?: (status: UploadStatus, pct: number) => void;
+  onTaskCreated?: (controller: UploadTaskController) => void;
 }
 
 export function formatFileSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 KB';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  return formatUploadFileSize(bytes);
 }
 
-function mapStorageErrorMessage(err: unknown): string {
-  const code = (err as { code?: string })?.code || '';
-  const msg = err instanceof Error ? err.message : String(err || '');
+const activeUploadTasks = new Set<UploadTask>();
 
-  if (code === 'storage/canceled' || msg.toLowerCase().includes('cancel')) {
-    return 'Upload cancelled.';
-  }
-  if (code === 'storage/unauthorized') {
-    return 'Permission denied by Storage security rules. Ensure your account email is verified and you belong to this group.';
-  }
-  if (code === 'storage/unauthenticated') {
-    return 'Please sign in with a verified account before uploading files.';
-  }
-  if (code === 'storage/retry-limit-exceeded' || msg.toLowerCase().includes('timeout')) {
-    return 'Upload timed out on a slow connection. Keep your form details and tap Retry.';
-  }
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    return 'You are offline. Reconnect to the internet and tap Retry to upload this file.';
-  }
-  return msg || 'Could not upload file to cloud storage. Check your connection and tap Retry.';
+/**
+ * Cancels all in-flight Firebase Storage uploads (called on sign-out or account change).
+ */
+export function cancelAllActiveUploads(): void {
+  activeUploadTasks.forEach((task) => {
+    try {
+      task.cancel();
+    } catch {
+      // ignore already-settled tasks
+    }
+  });
+  activeUploadTasks.clear();
 }
 
 /**
- * Genuine Firebase Storage upload using uploadBytesResumable.
- * Emits real byte-transfer percentages (0..100%) and rejects honestly on offline/rules/timeout errors.
+ * Genuine resumable Firebase Storage upload using uploadBytesResumable.
+ * Emits real byte-transfer progress (0..99%) and transitions to 100% only after getDownloadURL succeeds.
  */
 export async function uploadFileToCloudStorage(
   options: FileUploadOptions
@@ -158,41 +167,45 @@ export async function uploadFileToCloudStorage(
     file,
     fileName,
     contentType,
-    maxSizeBytes = 5 * 1024 * 1024,
+    maxSizeBytes = MAX_UPLOAD_SIZE_BYTES,
     scopeMeta,
     onProgress,
+    onStateChange,
     onTaskCreated,
   } = options;
 
-  const resolvedType = contentType || file.type || 'application/octet-stream';
-  const isImage = resolvedType.startsWith('image/');
-  const isPdf = resolvedType === 'application/pdf';
+  const allowPdf = folder !== 'avatars';
+  const validation = validateUploadFile({
+    fileName,
+    fileType: contentType || file.type,
+    fileSize: file.size,
+    allowPdf,
+    maxSizeBytes,
+    prePreparation: false,
+  });
 
-  if (folder === 'avatars' && !isImage) {
-    throw new Error('Profile photo must be an image file (JPG, PNG, or WebP).');
+  if (!validation.valid || !validation.normalizedType) {
+    throw new Error(validation.error || 'Unsupported file.');
   }
-  if (folder !== 'avatars' && !isImage && !isPdf) {
-    throw new Error('Only image files (JPG, PNG, WebP) or PDF documents are supported.');
-  }
-  if (file.size <= 0) {
-    throw new Error('Selected file is empty.');
-  }
-  if (file.size > maxSizeBytes) {
-    throw new Error(`File exceeds maximum size of ${formatFileSize(maxSizeBytes)}. Please choose a smaller file.`);
-  }
+
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    throw new Error('You appear to be offline. Reconnect to upload this file, or submit without attaching it if optional.');
+    throw new Error(
+      'You are offline. Reconnect to the internet and tap Retry — your form details are preserved.'
+    );
   }
 
   const uploaderUid = auth.currentUser?.uid || scopeMeta?.uploaderUid;
   if (!uploaderUid) {
-    throw new Error('Please sign in first before uploading files.');
+    throw new Error('Please sign in with a verified account before uploading files.');
+  }
+  if (auth.currentUser && !auth.currentUser.emailVerified) {
+    throw new Error('Verify your email address before uploading receipts or documents.');
   }
 
+  const resolvedType = validation.normalizedType;
+  const isPdf = validation.isPdf;
   const safeRecordId = recordId.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const cleanExtMatch = fileName.match(/\.([a-zA-Z0-9]+)$/);
-  const fallbackExt = isPdf ? 'pdf' : isImage ? (resolvedType.split('/')[1] || 'jpg').replace(/[^a-zA-Z0-9]/g, '') : 'bin';
-  const ext = (cleanExtMatch ? cleanExtMatch[1].toLowerCase() : fallbackExt) || 'bin';
+  const ext = isPdf ? 'pdf' : resolvedType === 'image/png' ? 'png' : 'jpg';
   const safeFileName = `${safeRecordId}.${ext}`;
 
   let path: string;
@@ -217,66 +230,107 @@ export async function uploadFileToCloudStorage(
     customMetadata,
   });
 
-  onTaskCreated?.(() => {
-    try {
-      task.cancel();
-    } catch {
-      // no-op
-    }
-  });
+  activeUploadTasks.add(task);
 
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const controller: UploadTaskController = {
+    pause: () => {
+      try {
+        return task.pause();
+      } catch {
+        return false;
+      }
+    },
+    resume: () => {
+      try {
+        return task.resume();
+      } catch {
+        return false;
+      }
+    },
+    cancel: () => {
+      try {
+        return task.cancel();
+      } catch {
+        return false;
+      }
+    },
+  };
+  onTaskCreated?.(controller);
 
-  try {
-    const downloadUrl = await Promise.race<string>([
-      new Promise<string>((resolve, reject) => {
-        onProgress?.(0);
-        task.on(
-          'state_changed',
-          (snapshot) => {
-            if (snapshot.totalBytes > 0 && onProgress) {
-              const pct = Math.min(
-                99,
-                Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100)
-              );
-              onProgress(pct);
-            }
-          },
-          (err) => reject(new Error(mapStorageErrorMessage(err))),
-          async () => {
-            try {
-              const url = await getDownloadURL(task.snapshot.ref);
-              onProgress?.(100);
-              resolve(url);
-            } catch (urlErr) {
-              reject(new Error(mapStorageErrorMessage(urlErr)));
-            }
-          }
-        );
-      }),
-      new Promise<string>((_, reject) => {
-        timeoutId = setTimeout(() => {
+  const downloadUrl = await new Promise<string>((resolve, reject) => {
+    let lastPct = 0;
+    onProgress?.(0);
+    onStateChange?.('uploading', 0);
+
+    task.on(
+      'state_changed',
+      (snapshot) => {
+        // Cancel immediately if user switched account or signed out mid-transfer
+        if (auth.currentUser && auth.currentUser.uid !== uploaderUid) {
           try {
             task.cancel();
           } catch {
             // no-op
           }
-          reject(new Error('Upload timed out after 30 seconds. Please check your connection and tap Retry.'));
-        }, 30000);
-      }),
-    ]);
+          activeUploadTasks.delete(task);
+          reject(
+            new Error(
+              classifyStorageError(null, { authMismatch: true }).message
+            )
+          );
+          return;
+        }
 
-    return {
-      url: downloadUrl,
-      storagePath: path,
-      fileName,
-      fileType: resolvedType,
-      fileSize: file.size,
-      uploadedToCloud: true,
-    };
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-  }
+        if (snapshot.totalBytes > 0) {
+          lastPct = computeUploadProgressPct(snapshot.bytesTransferred, snapshot.totalBytes);
+          onProgress?.(lastPct);
+        }
+
+        if (snapshot.state === 'paused') {
+          onStateChange?.('paused', lastPct);
+        } else if (snapshot.state === 'running') {
+          onStateChange?.('uploading', lastPct);
+        }
+      },
+      (err) => {
+        activeUploadTasks.delete(task);
+        const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine;
+        const classified = classifyStorageError(err, { isOnline });
+        onStateChange?.(classified.category === 'cancelled' ? 'cancelled' : 'failed', lastPct);
+        reject(new Error(classified.message));
+      },
+      async () => {
+        try {
+          if (auth.currentUser && auth.currentUser.uid !== uploaderUid) {
+            activeUploadTasks.delete(task);
+            onStateChange?.('failed', lastPct);
+            reject(new Error(classifyStorageError(null, { authMismatch: true }).message));
+            return;
+          }
+          const url = await getDownloadURL(task.snapshot.ref);
+          activeUploadTasks.delete(task);
+          onProgress?.(100);
+          onStateChange?.('completed', 100);
+          resolve(url);
+        } catch (urlErr) {
+          activeUploadTasks.delete(task);
+          const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine;
+          const classified = classifyStorageError(urlErr, { isOnline });
+          onStateChange?.('failed', lastPct);
+          reject(new Error(classified.message));
+        }
+      }
+    );
+  });
+
+  return {
+    url: downloadUrl,
+    storagePath: path,
+    fileName,
+    fileType: resolvedType,
+    fileSize: file.size,
+    uploadedToCloud: true,
+  };
 }
 
 export async function updateFirebaseProfileAvatar(photoUrl: string): Promise<void> {
