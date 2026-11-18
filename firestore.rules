@@ -96,7 +96,8 @@ service cloud.firestore {
       return cat in [
         'electricity', 'water', 'rent', 'internet', 'security',
         'waste', 'groceries', 'maintenance', 'utilities', 'savings',
-        'welfare', 'event', 'transport', 'emergency', 'dues', 'other'
+        'welfare', 'school', 'project', 'event', 'transport',
+        'emergency', 'dues', 'other'
       ];
     }
 
@@ -206,16 +207,27 @@ service cloud.firestore {
     function isValidContribution(data) {
       return data.keys().hasAll(['id', 'groupId', 'title', 'category', 'totalTargetAmount', 'deadline', 'status', 'createdAt']) &&
              data.keys().hasOnly([
-               'id', 'groupId', 'title', 'category', 'allocationMode', 'month', 'year',
-               'totalTargetAmount', 'deadline', 'description', 'status', 'rateConfigVersion', 'createdAt'
+               'id', 'groupId', 'title', 'category', 'customCategoryLabel', 'allocationMode',
+               'month', 'year', 'totalTargetAmount', 'deadline', 'hasNoDeadline', 'description',
+               'responsiblePersonId', 'supportingDocumentUrl', 'supportingDocumentName',
+               'supportingDocumentType', 'supportingDocumentSize', 'supportingStoragePath',
+               'status', 'rateConfigVersion', 'createdAt'
              ]) &&
              isValidId(data.id) &&
              isValidId(data.groupId) &&
              data.title is string && data.title.size() > 0 && data.title.size() <= 120 &&
              isValidExpenseCategory(data.category) &&
-             (!('allocationMode' in data) || data.allocationMode in ['stove_rate', 'equal', 'custom']) &&
+             (!('customCategoryLabel' in data) || (data.customCategoryLabel is string && data.customCategoryLabel.size() <= 80)) &&
+             (!('allocationMode' in data) || data.allocationMode in ['stove_rate', 'percentage', 'custom', 'equal']) &&
              data.totalTargetAmount is number && data.totalTargetAmount >= 0 &&
+             (!('hasNoDeadline' in data) || data.hasNoDeadline is bool) &&
              (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             (!('responsiblePersonId' in data) || isValidId(data.responsiblePersonId)) &&
+             (!('supportingDocumentUrl' in data) || (data.supportingDocumentUrl is string && data.supportingDocumentUrl.size() <= 2000)) &&
+             (!('supportingDocumentName' in data) || (data.supportingDocumentName is string && data.supportingDocumentName.size() <= 180)) &&
+             (!('supportingDocumentType' in data) || (data.supportingDocumentType is string && data.supportingDocumentType.size() <= 100)) &&
+             (!('supportingDocumentSize' in data) || (data.supportingDocumentSize is number && data.supportingDocumentSize >= 0)) &&
+             (!('supportingStoragePath' in data) || (data.supportingStoragePath is string && data.supportingStoragePath.size() <= 400)) &&
              data.status in ['active', 'closed'] &&
              data.deadline is string && data.deadline.size() <= 64 &&
              data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 64;
@@ -225,7 +237,7 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'contributionId', 'groupId', 'memberId', 'assignedAmount', 'assignedDate', 'deadline', 'status']) &&
              data.keys().hasOnly([
                'id', 'contributionId', 'groupId', 'memberId', 'memberUid', 'assignedAmount',
-               'applicableRate', 'stoveTypeAtAssignment', 'rateConfigVersion',
+               'allocationPercentage', 'applicableRate', 'stoveTypeAtAssignment', 'rateConfigVersion',
                'assignedDate', 'deadline', 'notes', 'status'
              ]) &&
              isValidId(data.id) &&
@@ -234,6 +246,7 @@ service cloud.firestore {
              isValidId(data.memberId) &&
              (!('memberUid' in data) || isValidId(data.memberUid)) &&
              data.assignedAmount is number && data.assignedAmount > 0 &&
+             (!('allocationPercentage' in data) || (data.allocationPercentage is number && data.allocationPercentage >= 0 && data.allocationPercentage <= 100)) &&
              (!('notes' in data) || (data.notes is string && data.notes.size() <= 300)) &&
              data.status in ['unpaid', 'partially_paid', 'submitted', 'pending_verification', 'verified', 'rejected', 'disputed', 'reversed', 'overdue', 'fully_settled'] &&
              (!('stoveTypeAtAssignment' in data) || data.stoveTypeAtAssignment == null || data.stoveTypeAtAssignment in ['electric', 'non_electric']);
@@ -248,6 +261,7 @@ service cloud.firestore {
                'rejectionReason', 'verifiedAt', 'verifiedBy', 'reversedAt', 'reversedBy',
                'reversalReason', 'reversedByPaymentId', 'disputedAt', 'disputedBy',
                'disputeReason', 'receiptEvidenceUrl', 'receiptImageUrl', 'receiptStoragePath',
+               'receiptFileName', 'receiptFileType', 'receiptFileSize',
                'receiptNote', 'createdAt'
              ]) &&
              isValidId(data.id) &&
@@ -258,9 +272,12 @@ service cloud.firestore {
              isValidId(data.collectorId) &&
              data.amountReceived is number && data.amountReceived > 0 &&
              data.paymentMethod in ['airtel_money', 'tnm_mpamba', 'bank_transfer', 'cash', 'other'] &&
-             data.transactionReference is string && data.transactionReference.size() > 0 && data.transactionReference.size() <= 100 &&
+             data.transactionReference is string && data.transactionReference.size() <= 100 &&
              (!('receiptNote' in data) || (data.receiptNote is string && data.receiptNote.size() <= 500)) &&
              (!('receiptStoragePath' in data) || (data.receiptStoragePath is string && data.receiptStoragePath.size() <= 400)) &&
+             (!('receiptFileName' in data) || (data.receiptFileName is string && data.receiptFileName.size() <= 180)) &&
+             (!('receiptFileType' in data) || (data.receiptFileType is string && data.receiptFileType.size() <= 100)) &&
+             (!('receiptFileSize' in data) || (data.receiptFileSize is number && data.receiptFileSize >= 0)) &&
              (!('receiptImageUrl' in data) || (data.receiptImageUrl is string && data.receiptImageUrl.size() <= 800000)) &&
              (!('receiptEvidenceUrl' in data) || (data.receiptEvidenceUrl is string && data.receiptEvidenceUrl.size() <= 800000)) &&
              data.verificationStatus in ['submitted', 'pending_verification', 'verified', 'rejected', 'disputed', 'reversed'] &&
@@ -305,17 +322,21 @@ service cloud.firestore {
     function isValidExpense(data) {
       return data.keys().hasAll(['id', 'groupId', 'name', 'category', 'amount', 'date', 'responsiblePersonId', 'status', 'createdAt']) &&
              data.keys().hasOnly([
-               'id', 'groupId', 'name', 'category', 'amount', 'date', 'description',
-               'responsiblePersonId', 'receiptNumber', 'receiptEvidenceUrl',
-               'receiptImageUrl', 'receiptStoragePath', 'paymentReference',
-               'status', 'approvedBy', 'approvedAt', 'createdAt'
+               'id', 'groupId', 'name', 'category', 'customCategoryLabel', 'amount', 'date',
+               'description', 'responsiblePersonId', 'receiptNumber', 'receiptEvidenceUrl',
+               'receiptImageUrl', 'receiptStoragePath', 'receiptFileName', 'receiptFileType',
+               'receiptFileSize', 'paymentReference', 'status', 'approvedBy', 'approvedAt', 'createdAt'
              ]) &&
              isValidId(data.id) &&
              isValidId(data.groupId) &&
              isValidId(data.responsiblePersonId) &&
              data.amount is number && data.amount > 0 &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
+             (!('customCategoryLabel' in data) || (data.customCategoryLabel is string && data.customCategoryLabel.size() <= 80)) &&
              (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             (!('receiptFileName' in data) || (data.receiptFileName is string && data.receiptFileName.size() <= 180)) &&
+             (!('receiptFileType' in data) || (data.receiptFileType is string && data.receiptFileType.size() <= 100)) &&
+             (!('receiptFileSize' in data) || (data.receiptFileSize is number && data.receiptFileSize >= 0)) &&
              isValidExpenseCategory(data.category) &&
              data.status in ['approved', 'pending_approval', 'rejected'] &&
              data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 64;

@@ -315,10 +315,10 @@ export const LandingPage: React.FC<{
                 <FileSpreadsheet className="w-4 h-4 text-slate-400 dark:text-slate-500" />
               </div>
               <h3 className="font-bold text-base text-slate-900 dark:text-white">
-                Equal, Custom, or Accommodation Split
+                Percentage, Custom, or Electricity Split
               </h3>
               <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-2 leading-relaxed">
-                Split equally across everyone, set individual pledges, or apply optional stove-tier rates for shared houses and hostels.
+                Split bills by exact member percentages totaling 100%, enter custom MWK amounts, or apply optional stove-tier rates for house/hostel electricity.
               </p>
             </div>
 
@@ -348,10 +348,10 @@ export const LandingPage: React.FC<{
               Flexible Contribution Rules
             </span>
             <h3 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white">
-              Equal split, custom pledges, or optional hostel stove rates
+              Percentage split, custom amounts, or optional electricity stove rates
             </h3>
             <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-              Non-accommodation groups (families, chilimba, friends, churches, teams) use equal shares or custom amounts without any stove setup. For shared houses and student hostels, an optional preset supports fair electric vs non-electric electricity contributions.
+              Non-accommodation groups (families, chilimba, friends, churches, teams) and non-electricity bills use flexible percentage splits (100% total) or custom MWK amounts without any stove setup. For shared houses and student hostels, an optional preset supports electricity contributions.
             </p>
             <ul className="space-y-2.5 text-xs sm:text-sm text-slate-700 dark:text-slate-300">
               <li className="flex items-center gap-2.5">
@@ -371,7 +371,7 @@ export const LandingPage: React.FC<{
 
           <div className="bg-white dark:bg-[#0D1424] rounded-2xl p-5 sm:p-6 border border-slate-200 dark:border-slate-800 space-y-4">
             <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-              Optional Preset for Shared Houses &amp; Hostels
+              Optional Electricity Preset for Houses &amp; Hostels
             </div>
             <div className="bg-slate-50 dark:bg-[#131D33] rounded-xl p-4 border border-slate-200 dark:border-slate-700/70 flex items-center justify-between gap-4">
               <div>

@@ -28,7 +28,7 @@ describe('UNIT SPOT Multi-Group, Member Role, Invite & Non-Accommodation Workflo
     assert.equal(supportsAccommodationRates('friends'), false);
     assert.equal(supportsAccommodationRates('event'), false);
 
-    assert.equal(getGroupPreset('savings_group').defaultAllocationMode, 'equal');
+    assert.equal(getGroupPreset('savings_group').defaultAllocationMode, 'percentage');
     assert.equal(getGroupPreset('house').defaultAllocationMode, 'stove_rate');
   });
 

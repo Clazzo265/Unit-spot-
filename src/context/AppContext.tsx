@@ -44,6 +44,8 @@ import {
   normalizeGroupMemberForSync,
   mergeGroupMembersWithFallback,
   isAccommodationGroup,
+  isStoveBillingApplicable,
+  formatDeadlineLabel,
   generateJoinCode,
   extractInviteCodeFromUrl,
 } from '../utils/financialConfig';
@@ -162,11 +164,16 @@ interface AppContextType {
     assignmentId: string;
     amount: number | string;
     paymentMethod: PaymentMethod;
+    paymentDate?: string;
     transactionReference?: string;
     idempotencyKey?: string;
     receiptImageUrl?: string;
     receiptStoragePath?: string;
+    receiptFileName?: string;
+    receiptFileType?: string;
+    receiptFileSize?: number;
     receiptNote?: string;
+    verifyImmediately?: boolean;
   }) => {
     success: boolean;
     paymentId: string;
@@ -195,7 +202,12 @@ interface AppContextType {
 
   createContribution: (
     contribution: Omit<Contribution, 'id' | 'createdAt'>,
-    memberAssignments: { memberId: string; amount: number; notes?: string }[]
+    memberAssignments: {
+      memberId: string;
+      amount: number;
+      allocationPercentage?: number;
+      notes?: string;
+    }[]
   ) => ActionResult;
 
   // Group & Invite Lifecycle
@@ -473,7 +485,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       path: string,
       docId: string,
       data: Record<string, unknown>,
-      op: OperationType = OperationType.WRITE
+      op: OperationType = OperationType.WRITE,
+      onRejected?: () => void
     ): Promise<void> => {
       const expectedUid = firebaseAuthUser?.uid;
       if (!expectedUid || activeUidRef.current !== expectedUid) return;
@@ -489,12 +502,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       } catch (err) {
         if (activeUidRef.current !== expectedUid) return;
-        setSyncStatus(typeof navigator !== 'undefined' && !navigator.onLine ? 'offline_queued' : 'error');
+        const offlineNow = typeof navigator !== 'undefined' && !navigator.onLine;
+        setSyncStatus(offlineNow ? 'offline_queued' : 'error');
+        if (!offlineNow && onRejected) {
+          onRejected();
+        }
         try {
           handleFirestoreError(err, op, `${path}/${docId}`);
         } catch (wrapped) {
           console.warn(wrapped);
-          setActionError('Cloud sync error: changes are saved locally but could not sync to Firestore.');
+          const msg = err instanceof Error ? err.message : '';
+          setActionError(
+            offlineNow
+              ? 'You are offline. Changes are saved locally and queued.'
+              : onRejected
+                ? `Cloud save rejected (${msg || 'permission or validation error'}). Reverted unsaved record.`
+                : 'Cloud sync error: changes could not sync to Firestore.'
+          );
         }
       }
     },
@@ -1375,7 +1399,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [syncToFirestore]
   );
 
-  // Record payment (Admins/Treasurers verify immediately; Active Members submit pending_verification for their own assignment)
+  // Record payment (Honest verification workflow: member submissions always enter pending_verification;
+  // admins/treasurers explicitly choose whether to verify immediately or save as pending_verification)
   const recordPayment: AppContextType['recordPayment'] = (params) => {
     if (!currentUser) {
       return { success: false, paymentId: '', newOutstanding: 0, error: 'Authentication required.' };
@@ -1444,11 +1469,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const rawRef = refValidation.normalized || '';
     const isCustomRefProvided = Boolean(rawRef);
+    const dateStamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const effectiveReference = isCustomRefProvided
       ? rawRef
-      : params.receiptImageUrl
-        ? `REC-IMG-${Math.random().toString(36).substring(2, 7).toUpperCase()}-${Math.floor(100 + Math.random() * 899)}`
-        : `TX-${Date.now().toString().slice(-6)}`;
+      : params.paymentMethod === 'cash'
+        ? `CASH-${dateStamp}-${Math.floor(1000 + Math.random() * 9000)}`
+        : params.receiptImageUrl
+          ? `REC-IMG-${Math.random().toString(36).substring(2, 7).toUpperCase()}-${Math.floor(100 + Math.random() * 899)}`
+          : `TX-${Date.now().toString().slice(-6)}`;
 
     // Duplicate transaction reference check across non-rejected, non-reversed payments
     if (isCustomRefProvided) {
@@ -1480,8 +1508,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const paymentId = `TX-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
     const nowIso = new Date().toISOString();
+    let paymentDateIso = nowIso;
+    if (params.paymentDate && params.paymentDate.trim()) {
+      const parsedDate = new Date(params.paymentDate);
+      if (!Number.isNaN(parsedDate.getTime())) {
+        paymentDateIso = parsedDate.toISOString();
+      }
+    }
 
-    const isDirectAutoVerified = isVerifier;
+    const isDirectAutoVerified = isVerifier && params.verifyImmediately === true;
 
     const resolvedMemberUid =
       targetAssignment.memberUid ||
@@ -1495,13 +1530,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       memberId: targetAssignment.memberId,
       memberUid: resolvedMemberUid,
       amountReceived: parsedAmount.value,
-      paymentDate: nowIso,
+      paymentDate: paymentDateIso,
       paymentMethod: params.paymentMethod,
       transactionReference: effectiveReference,
       idempotencyKey: params.idempotencyKey,
       receiptImageUrl: params.receiptImageUrl,
       receiptStoragePath: params.receiptStoragePath,
       receiptEvidenceUrl: params.receiptImageUrl,
+      receiptFileName: params.receiptFileName,
+      receiptFileType: params.receiptFileType,
+      receiptFileSize: params.receiptFileSize,
       collectorId: currentUser.id,
       submittedByMemberId: !isVerifier ? memberSelf?.id : undefined,
       verificationStatus: isDirectAutoVerified ? 'verified' : 'pending_verification',
@@ -1511,6 +1549,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: nowIso,
     };
 
+    const previousPayments = payments;
     const updatedPayments = [newPayment, ...payments];
     setPayments(updatedPayments);
 
@@ -1518,15 +1557,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       `groups/${targetAssignment.groupId}/payments`,
       newPayment.id,
       newPayment as unknown as Record<string, unknown>,
-      OperationType.CREATE
+      OperationType.CREATE,
+      () => {
+        setPayments((curr) => curr.filter((p) => p.id !== newPayment.id));
+        recomputeAssignmentAndCommitments(targetAssignment, previousPayments, nowIso);
+      }
     );
 
     if (!isDirectAutoVerified) {
       const targetGroup = groups.find((g) => g.id === targetAssignment.groupId);
-      if (targetGroup?.adminId) {
+      if (targetGroup?.adminId && targetGroup.adminId !== currentUser.id) {
         addNotification(
           targetGroup.adminId,
-          'Payment Proof Waiting Check',
+          'Payment Waiting Check',
           `${currentUser.name} submitted payment proof of MK ${parsedAmount.value.toLocaleString('en-US')} (Ref: ${effectiveReference}).`,
           'payment',
           targetAssignment.groupId
@@ -2103,7 +2146,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       `groups/${expenseData.groupId}/expenses`,
       newExpense.id,
       newExpense as unknown as Record<string, unknown>,
-      OperationType.CREATE
+      OperationType.CREATE,
+      () => {
+        setExpenses((curr) => curr.filter((e) => e.id !== newExpense.id));
+      }
     );
 
     addAuditLog(
@@ -2158,11 +2204,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { success: true };
   };
 
-  // Create Contribution (respects explicit allocationMode: stove_rate only requires stove classification)
-  const createContribution = (
-    contributionData: Omit<Contribution, 'id' | 'createdAt'>,
-    memberAssignments: { memberId: string; amount: number; notes?: string }[]
-  ): ActionResult => {
+  // Create Contribution (supports stove_rate for accommodation electricity ONLY, percentage, and custom allocations)
+  const createContribution: AppContextType['createContribution'] = (
+    contributionData,
+    memberAssignments
+  ) => {
     if (!currentUser || !canManageGroupRole(getRoleForGroupId(contributionData.groupId))) {
       return { success: false, error: 'Only administrators may create contribution obligations.' };
     }
@@ -2171,11 +2217,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const targetGroup = groups.find((g) => g.id === contributionData.groupId) || currentGroup;
+    const stoveAllowed = isStoveBillingApplicable(targetGroup, contributionData.category);
     const allocationMode: ContributionAllocationMode =
-      contributionData.allocationMode ||
-      (isAccommodationGroup(targetGroup) && contributionData.category === 'electricity'
-        ? 'stove_rate'
-        : 'equal');
+      contributionData.allocationMode || (stoveAllowed ? 'stove_rate' : 'custom');
+
+    if (allocationMode === 'stove_rate' && !stoveAllowed) {
+      return {
+        success: false,
+        error:
+          'Stove-tier electricity rates only apply to Electricity requests inside Shared House or Student Hostel groups.',
+      };
+    }
 
     for (const ma of memberAssignments) {
       const member = groupMembers.find(
@@ -2230,6 +2282,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         memberId: ma.memberId,
         memberUid: resolveMemberUid(ma.memberId, contributionData.groupId),
         assignedAmount: toSafeIntMWK(ma.amount),
+        allocationPercentage:
+          typeof ma.allocationPercentage === 'number' ? ma.allocationPercentage : undefined,
         applicableRate: stoveType ? RATES[stoveType] : undefined,
         stoveTypeAtAssignment: stoveType,
         rateConfigVersion: stoveType ? RATE_CONFIG_VERSION : undefined,
@@ -2243,18 +2297,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setContributions((prev) => [newContribution, ...prev]);
     setAssignments((prev) => [...newAssignments, ...prev]);
 
+    const newAssignmentIds = new Set(newAssignments.map((a) => a.id));
     syncToFirestore(
       `groups/${contributionData.groupId}/contributions`,
       contributionId,
       newContribution as unknown as Record<string, unknown>,
-      OperationType.CREATE
+      OperationType.CREATE,
+      () => {
+        setContributions((curr) => curr.filter((c) => c.id !== contributionId));
+        setAssignments((curr) => curr.filter((a) => !newAssignmentIds.has(a.id)));
+      }
     );
     newAssignments.forEach((asg) => {
       syncToFirestore(
         `groups/${contributionData.groupId}/assignments`,
         asg.id,
         asg as unknown as Record<string, unknown>,
-        OperationType.CREATE
+        OperationType.CREATE,
+        () => {
+          setAssignments((curr) => curr.filter((a) => a.id !== asg.id));
+        }
       );
     });
 
@@ -2268,11 +2330,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     );
 
+    const deadlineText = formatDeadlineLabel(
+      contributionData.deadline,
+      contributionData.hasNoDeadline
+    );
     memberAssignments.forEach((ma) => {
       addNotification(
         ma.memberId,
         'New Contribution Set',
-        `Your share for "${contributionData.title}" is MK ${toSafeIntMWK(ma.amount).toLocaleString('en-US')}. Due ${new Date(contributionData.deadline).toLocaleDateString()}.`,
+        `Your share for "${contributionData.title}" is MK ${toSafeIntMWK(ma.amount).toLocaleString('en-US')}. Due: ${deadlineText}.`,
         'announcement',
         contributionData.groupId
       );

@@ -47,13 +47,15 @@ export type ExpenseCategory =
   | 'utilities'
   | 'savings'
   | 'welfare'
+  | 'school'
+  | 'project'
   | 'event'
   | 'transport'
   | 'emergency'
   | 'dues'
   | 'other';
 
-export type ContributionAllocationMode = 'stove_rate' | 'equal' | 'custom';
+export type ContributionAllocationMode = 'stove_rate' | 'percentage' | 'custom' | 'equal';
 
 export type GroupJoinPolicy = 'code_auto' | 'admin_approval';
 
@@ -216,12 +218,20 @@ export interface Contribution {
   groupId: string;
   title: string;
   category: ExpenseCategory;
+  customCategoryLabel?: string;
   allocationMode?: ContributionAllocationMode;
   month: number; // 1-12
   year: number;
   totalTargetAmount: number; // integer MWK
-  deadline: string; // ISO date string
+  deadline: string; // ISO date string or '' when hasNoDeadline is true
+  hasNoDeadline?: boolean;
   description?: string;
+  responsiblePersonId?: string;
+  supportingDocumentUrl?: string;
+  supportingDocumentName?: string;
+  supportingDocumentType?: string;
+  supportingDocumentSize?: number;
+  supportingStoragePath?: string;
   status: 'active' | 'closed';
   rateConfigVersion?: string;
   createdAt: string;
@@ -234,6 +244,7 @@ export interface ContributionAssignment {
   memberId: string; // MemberRecord ID
   memberUid?: string; // Resolved Firebase Auth UID for rule-enforced scoping
   assignedAmount: number; // integer MWK
+  allocationPercentage?: number;
   applicableRate?: number; // snapshotted rate in MWK
   stoveTypeAtAssignment?: StoveType;
   rateConfigVersion?: string;
@@ -271,6 +282,9 @@ export interface Payment {
   receiptEvidenceUrl?: string;
   receiptImageUrl?: string; // Firebase Storage URL or compressed preview
   receiptStoragePath?: string;
+  receiptFileName?: string;
+  receiptFileType?: string;
+  receiptFileSize?: number;
   receiptNote?: string;
   createdAt: string;
 }
@@ -323,6 +337,7 @@ export interface Expense {
   groupId: string;
   name: string;
   category: ExpenseCategory;
+  customCategoryLabel?: string;
   amount: number; // MWK integer
   date: string;
   description: string;
@@ -331,6 +346,9 @@ export interface Expense {
   receiptEvidenceUrl?: string;
   receiptImageUrl?: string;
   receiptStoragePath?: string;
+  receiptFileName?: string;
+  receiptFileType?: string;
+  receiptFileSize?: number;
   paymentReference?: string;
   status: 'approved' | 'pending_approval' | 'rejected';
   approvedBy?: string;

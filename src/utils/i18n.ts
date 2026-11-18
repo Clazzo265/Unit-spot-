@@ -49,6 +49,10 @@ export interface LocaleDictionary {
     continueWithGoogle: string;
     emailLabel: string;
     passwordLabel: string;
+    confirmPasswordLabel: string;
+    passwordsDoNotMatch: string;
+    showPasswordLabel: string;
+    hidePasswordLabel: string;
     fullNameLabel: string;
     forgotPassword: string;
     createAccountTitle: string;
@@ -116,6 +120,10 @@ export const LOCALES: Record<AppLanguage, LocaleDictionary> = {
       continueWithGoogle: 'Continue with Google',
       emailLabel: 'Email address',
       passwordLabel: 'Password',
+      confirmPasswordLabel: 'Confirm password',
+      passwordsDoNotMatch: 'Passwords do not match. Please check and try again.',
+      showPasswordLabel: 'Show password',
+      hidePasswordLabel: 'Hide password',
       fullNameLabel: 'Full name',
       forgotPassword: 'Forgot password?',
       createAccountTitle: 'Create your UNIT SPOT account',
@@ -182,6 +190,10 @@ export const LOCALES: Record<AppLanguage, LocaleDictionary> = {
       continueWithGoogle: 'Pitirizani ndi Google',
       emailLabel: 'Imelo yanu',
       passwordLabel: 'Mawu achinsinsi',
+      confirmPasswordLabel: 'Tsimikizirani mawu achinsinsi',
+      passwordsDoNotMatch: 'Mawu achinsinsi sakufanana. Chonde onaninso.',
+      showPasswordLabel: 'Onetsani mawu achinsinsi',
+      hidePasswordLabel: 'Bisani mawu achinsinsi',
       fullNameLabel: 'Dzina lanu lonse',
       forgotPassword: 'Mwayiwala mawu achinsinsi?',
       createAccountTitle: 'Pangani akaunti ya UNIT SPOT',

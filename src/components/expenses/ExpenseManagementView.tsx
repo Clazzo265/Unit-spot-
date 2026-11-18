@@ -12,7 +12,15 @@ import {
   getExpenseCategoryLabel,
 } from '../../utils/groupPresets';
 import { EmptyState } from '../ui/EmptyState';
-import { Plus, CheckCircle2, Clock, XCircle, AlertCircle, Receipt } from 'lucide-react';
+import {
+  Plus,
+  CheckCircle2,
+  Clock,
+  XCircle,
+  AlertCircle,
+  Receipt,
+  ExternalLink,
+} from 'lucide-react';
 
 export const ExpenseManagementView: React.FC<{
   onOpenRecordExpense: () => void;
@@ -203,7 +211,7 @@ export const ExpenseManagementView: React.FC<{
                         {e.name}
                       </div>
                       <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                        {getExpenseCategoryLabel(e.category)} ·{' '}
+                        {getExpenseCategoryLabel(e.category, e.customCategoryLabel)} ·{' '}
                         {new Date(e.date).toLocaleDateString('en-GB', {
                           day: 'numeric',
                           month: 'short',
@@ -226,9 +234,20 @@ export const ExpenseManagementView: React.FC<{
                       </div>
                     </div>
                   </div>
-                  {e.receiptNumber && (
-                    <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
-                      Receipt: {e.receiptNumber}
+                  {(e.receiptNumber || e.receiptImageUrl) && (
+                    <div className="flex items-center justify-between gap-2 text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                      <span>{e.receiptNumber ? `Receipt: ${e.receiptNumber}` : ''}</span>
+                      {e.receiptImageUrl && (
+                        <a
+                          href={e.receiptImageUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 font-sans font-semibold text-blue-600 dark:text-cyan-400 hover:underline"
+                        >
+                          <span>{e.receiptFileName || 'View File'}</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
                     </div>
                   )}
                   {e.status === 'pending_approval' && canApprove && (
@@ -283,7 +302,7 @@ export const ExpenseManagementView: React.FC<{
                       </td>
 
                       <td className="py-3 px-4 text-slate-600 dark:text-slate-300 font-semibold">
-                        {getExpenseCategoryLabel(e.category)}
+                        {getExpenseCategoryLabel(e.category, e.customCategoryLabel)}
                       </td>
 
                       <td className="py-3 px-4 font-bold font-mono text-slate-900 dark:text-white text-sm tabular-nums">
@@ -299,7 +318,18 @@ export const ExpenseManagementView: React.FC<{
                       </td>
 
                       <td className="py-3 px-4 font-mono text-[11px] text-slate-700 dark:text-slate-300">
-                        {e.receiptNumber || 'None provided'}
+                        <div>{e.receiptNumber || (e.receiptImageUrl ? 'File Attached' : 'None provided')}</div>
+                        {e.receiptImageUrl && (
+                          <a
+                            href={e.receiptImageUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 font-sans text-[11px] font-semibold text-blue-600 dark:text-cyan-400 hover:underline mt-0.5"
+                          >
+                            <span>{e.receiptFileName || 'View Receipt'}</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
                       </td>
 
                       <td className="py-3 px-4">

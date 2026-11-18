@@ -11,8 +11,10 @@ import {
   resolveMemberInfo,
   STOVE_TYPE_LABELS,
   isValidStoveType,
-  isAccommodationGroup,
+  isStoveBillingApplicable,
+  formatDeadlineLabel,
 } from '../../utils/financialConfig';
+import { getExpenseCategoryLabel } from '../../utils/groupPresets';
 import { canVerifyPaymentsRole } from '../../utils/centralizedFinancialAdmin';
 import {
   Clock,
@@ -26,6 +28,7 @@ import {
   Users,
   FileSpreadsheet,
   ArrowRight,
+  Receipt,
 } from 'lucide-react';
 import { CommitmentCard } from '../commitments/CommitmentCard';
 
@@ -39,6 +42,7 @@ export const MainDashboardView: React.FC<{
   onOpenRecordPayment,
   onOpenCreateCommitment,
   onOpenCreateContribution,
+  onOpenRecordExpense,
   onNavigateTab,
 }) => {
   const {
@@ -155,12 +159,11 @@ export const MainDashboardView: React.FC<{
 
   const activeCommitments = groupCommitments.filter((c) => c.currentOutstandingAmount > 0);
   const canManage = canVerifyPaymentsRole(effectiveRole);
-  const showStoveInfo = isAccommodationGroup(currentGroup);
-  const usesStoveBilling =
-    showStoveInfo &&
-    groupContributions.some(
-      (c) => c.allocationMode === 'stove_rate' || (!c.allocationMode && c.category === 'electricity')
-    );
+  const usesStoveBilling = groupContributions.some(
+    (c) =>
+      isStoveBillingApplicable(currentGroup, c.category) &&
+      (c.allocationMode === 'stove_rate' || !c.allocationMode)
+  );
 
   const membersNeedingStoveReview = usesStoveBilling
     ? activeGroupMembers.filter((m) => !isValidStoveType(m.stoveType))
@@ -329,6 +332,17 @@ export const MainDashboardView: React.FC<{
             >
               <Clock className="w-3.5 h-3.5 text-[#D5A52B]" />
               <span>New Commitment</span>
+            </button>
+          )}
+
+          {canManage && (
+            <button
+              type="button"
+              onClick={onOpenRecordExpense}
+              className="min-h-[44px] inline-flex items-center gap-1.5 bg-white hover:bg-slate-50 dark:bg-[#11192C] dark:hover:bg-[#18233D] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700/80 px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <Receipt className="w-3.5 h-3.5 text-blue-600 dark:text-cyan-400" />
+              <span>Record Expense</span>
             </button>
           )}
 
@@ -560,6 +574,12 @@ export const MainDashboardView: React.FC<{
             <div className="divide-y divide-slate-100 dark:divide-slate-800/80">
               {groupAssignments.map((a) => {
                 const member = resolveMemberInfo(a.memberId, groupMembers, users);
+                const contrib = groupContributions.find((c) => c.id === a.contributionId);
+                const rowUsesStove = Boolean(
+                  contrib &&
+                    isStoveBillingApplicable(currentGroup, contrib.category) &&
+                    (contrib.allocationMode === 'stove_rate' || Boolean(a.stoveTypeAtAssignment))
+                );
                 const verifiedPaid = calculateVerifiedPaidForAssignment(a.id, groupPayments);
                 const { outstanding, overpaid, completionPercentage } =
                   calculateOutstandingBalance(a.assignedAmount, verifiedPaid);
@@ -586,7 +606,12 @@ export const MainDashboardView: React.FC<{
                       <div className="min-w-0">
                         <div className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2 flex-wrap">
                           <span className="truncate">{member?.name || 'Registered Member'}</span>
-                          {showStoveInfo && member && isValidStoveType(member.stoveType) && (
+                          {contrib && (
+                            <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                              · {contrib.title} ({getExpenseCategoryLabel(contrib.category, contrib.customCategoryLabel)})
+                            </span>
+                          )}
+                          {rowUsesStove && member && isValidStoveType(member.stoveType) && (
                             <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
                               · {STOVE_TYPE_LABELS[member.stoveType]}
                             </span>

@@ -5,11 +5,12 @@ import { ExpenseCategory } from '../../types';
 import { formatMWK } from '../../utils/financialCalculations';
 import { parseMWKInput } from '../../utils/financialConfig';
 import {
-  EXPENSE_CATEGORY_LABELS,
+  ORDERED_CONTRIBUTION_CATEGORIES,
   getExpenseCategoryLabel,
   getGroupPreset,
 } from '../../utils/groupPresets';
 import { Modal } from '../ui/Modal';
+import { FileUploadField, UploadedFileState } from '../ui/FileUploadField';
 import { Plus, AlertCircle, CheckCircle } from 'lucide-react';
 
 interface RecordExpenseModalProps {
@@ -30,25 +31,30 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
   const [category, setCategory] = useState<ExpenseCategory>(
     preset.suggestedExpenseCategories[0] || 'other'
   );
+  const [customCategoryLabel, setCustomCategoryLabel] = useState<string>('');
   const [amount, setAmount] = useState<string>('');
+  const [expenseDate, setExpenseDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
   const [description, setDescription] = useState<string>('');
   const [receiptNumber, setReceiptNumber] = useState<string>('');
+  const [uploadedReceipt, setUploadedReceipt] = useState<UploadedFileState | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'uploaded' | 'error'>('idle');
   const [error, setError] = useState<string>('');
   const [success, setSuccess] = useState<boolean>(false);
 
   useEffect(() => {
     if (isOpen) {
       setCategory(preset.suggestedExpenseCategories[0] || 'other');
+      setCustomCategoryLabel('');
+      setExpenseDate(new Date().toISOString().split('T')[0]);
       setError('');
     }
   }, [isOpen, currentGroup?.id, preset]);
 
   const sortedCategories = useMemo(() => {
     const suggested = new Set(preset.suggestedExpenseCategories);
-    const allKeys = Object.keys(EXPENSE_CATEGORY_LABELS) as ExpenseCategory[];
     return [
-      ...preset.suggestedExpenseCategories.filter((c) => allKeys.includes(c)),
-      ...allKeys.filter((c) => !suggested.has(c)),
+      ...preset.suggestedExpenseCategories.filter((c) => ORDERED_CONTRIBUTION_CATEGORIES.includes(c)),
+      ...ORDERED_CONTRIBUTION_CATEGORIES.filter((c) => !suggested.has(c)),
     ];
   }, [preset]);
 
@@ -56,6 +62,11 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
     e.preventDefault();
     if (!currentGroup || !currentUser) return;
     setError('');
+
+    if (uploadStatus === 'uploading') {
+      setError('Please wait for the receipt file upload to finish before saving.');
+      return;
+    }
 
     const parsedAmount = parseMWKInput(amount);
     if (!parsedAmount.valid) {
@@ -68,15 +79,29 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
       return;
     }
 
+    if (category === 'other' && customCategoryLabel.trim().length > 80) {
+      setError('Custom category name must be 80 characters or fewer.');
+      return;
+    }
+
+    const isoDate = expenseDate ? new Date(expenseDate).toISOString() : new Date().toISOString();
+
     const result = recordExpense({
       groupId: currentGroup.id,
       name: name.trim(),
       category,
+      customCategoryLabel: category === 'other' && customCategoryLabel.trim() ? customCategoryLabel.trim() : undefined,
       amount: parsedAmount.value,
-      date: new Date().toISOString(),
+      date: Number.isNaN(new Date(isoDate).getTime()) ? new Date().toISOString() : isoDate,
       description: description.trim(),
       responsiblePersonId: currentUser.id,
       receiptNumber: receiptNumber.trim() || undefined,
+      receiptImageUrl: uploadedReceipt?.url,
+      receiptStoragePath: uploadedReceipt?.storagePath,
+      receiptEvidenceUrl: uploadedReceipt?.url,
+      receiptFileName: uploadedReceipt?.fileName,
+      receiptFileType: uploadedReceipt?.fileType,
+      receiptFileSize: uploadedReceipt?.fileSize,
     });
 
     if (!result.success) {
@@ -92,9 +117,12 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
 
   const resetAndClose = () => {
     setName('');
+    setCustomCategoryLabel('');
     setAmount('');
     setDescription('');
     setReceiptNumber('');
+    setUploadedReceipt(null);
+    setUploadStatus('idle');
     setError('');
     setSuccess(false);
     onClose();
@@ -106,7 +134,7 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
       onClose={resetAndClose}
       title="Record Group Expense"
       subtitle="Show members where shared funds were spent"
-      maxWidthClass="max-w-md"
+      maxWidthClass="max-w-lg"
     >
       {!currentGroup || !currentUser ? (
         <div className="py-6 text-center space-y-3">
@@ -201,18 +229,67 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
-              Receipt / Token Number
-            </label>
-            <input
-              type="text"
-              placeholder="e.g. ESCOM-TKN-9281-0021 or Shop Receipt #44"
-              value={receiptNumber}
-              onChange={(e) => setReceiptNumber(e.target.value)}
-              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs font-mono text-slate-900 dark:text-white focus:outline-none"
-            />
+          {category === 'other' && (
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
+                Custom Category Name (Optional)
+              </label>
+              <input
+                type="text"
+                maxLength={80}
+                placeholder="e.g. Charcoal, Generator Servicing, Borehole Pump"
+                value={customCategoryLabel}
+                onChange={(e) => setCustomCategoryLabel(e.target.value)}
+                className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
+              />
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
+                Expense Date *
+              </label>
+              <input
+                type="date"
+                value={expenseDate}
+                onChange={(e) => setExpenseDate(e.target.value)}
+                className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
+                Receipt / Token Number
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. ESCOM-TKN-9281"
+                value={receiptNumber}
+                onChange={(e) => setReceiptNumber(e.target.value)}
+                className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs font-mono text-slate-900 dark:text-white focus:outline-none"
+              />
+            </div>
           </div>
+
+          <FileUploadField
+            label="Receipt / Invoice Attachment (Optional)"
+            helperText="Attach a photo or PDF invoice from Firebase Storage (up to 5 MB)."
+            folder="receipts"
+            groupId={currentGroup.id}
+            recordIdPrefix="exp"
+            scopeMeta={{
+              uploaderUid: currentUser.id,
+              adminId: currentGroup.adminId,
+              treasurerId: currentGroup.treasurerId,
+            }}
+            allowPdf
+            allowCamera
+            value={uploadedReceipt}
+            onChange={setUploadedReceipt}
+            onStatusChange={setUploadStatus}
+          />
 
           <div>
             <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
@@ -237,10 +314,11 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
             </button>
             <button
               type="submit"
-              className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-5 py-2 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+              disabled={uploadStatus === 'uploading'}
+              className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 text-white px-5 py-2 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
             >
               <Plus className="w-4 h-4" />
-              <span>Save Expense</span>
+              <span>{uploadStatus === 'uploading' ? 'Uploading receipt...' : 'Save Expense'}</span>
             </button>
           </div>
         </form>
@@ -248,3 +326,4 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
     </Modal>
   );
 };
+

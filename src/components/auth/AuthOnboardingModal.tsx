@@ -16,6 +16,8 @@ import {
   PlusCircle,
   ArrowRight,
   RefreshCw,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 interface AuthPanelProps {
@@ -58,6 +60,10 @@ export const AuthOnboardingCard: React.FC<AuthPanelProps> = ({
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [localValidationError, setLocalValidationError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [resetSent, setResetSent] = useState(false);
 
@@ -97,7 +103,13 @@ export const AuthOnboardingCard: React.FC<AuthPanelProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     clearAuthError();
+    setLocalValidationError(null);
     setResetSent(false);
+
+    if (authTab === 'signup' && password !== confirmPassword) {
+      setLocalValidationError(strings.auth.passwordsDoNotMatch);
+      return;
+    }
 
     if (intent === 'join' && inviteCodeInput.trim()) {
       setPendingInviteCode(inviteCodeInput.trim().toUpperCase());
@@ -270,16 +282,19 @@ export const AuthOnboardingCard: React.FC<AuthPanelProps> = ({
       )}
 
       {/* Auth Error */}
-      {authError && (
+      {(localValidationError || authError) && (
         <div
           role="alert"
           className="p-3.5 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800/70 rounded-xl text-xs text-rose-800 dark:text-rose-200 flex items-start gap-2.5"
         >
           <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
-          <div className="flex-1 leading-relaxed">{authError}</div>
+          <div className="flex-1 leading-relaxed">{localValidationError || authError}</div>
           <button
             type="button"
-            onClick={clearAuthError}
+            onClick={() => {
+              setLocalValidationError(null);
+              clearAuthError();
+            }}
             className="min-h-[36px] px-2 text-rose-700 dark:text-rose-300 hover:text-rose-950 dark:hover:text-white font-semibold cursor-pointer"
           >
             Dismiss
@@ -301,6 +316,7 @@ export const AuthOnboardingCard: React.FC<AuthPanelProps> = ({
           onClick={() => {
             setAuthTab('signin');
             clearAuthError();
+            setLocalValidationError(null);
             setResetSent(false);
           }}
           className={`flex-1 min-h-[38px] rounded-lg font-semibold transition-colors cursor-pointer ${
@@ -316,6 +332,7 @@ export const AuthOnboardingCard: React.FC<AuthPanelProps> = ({
           onClick={() => {
             setAuthTab('signup');
             clearAuthError();
+            setLocalValidationError(null);
             setResetSent(false);
           }}
           className={`flex-1 min-h-[38px] rounded-lg font-semibold transition-colors cursor-pointer ${
@@ -375,40 +392,97 @@ export const AuthOnboardingCard: React.FC<AuthPanelProps> = ({
         </div>
 
         {authTab !== 'reset' && (
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label
-                htmlFor="auth-password"
-                className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300"
-              >
-                {strings.auth.passwordLabel}
-              </label>
-              {authTab === 'signin' && (
+          <div className="space-y-3">
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label
+                  htmlFor="auth-password"
+                  className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300"
+                >
+                  {strings.auth.passwordLabel}
+                </label>
+                {authTab === 'signin' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthTab('reset');
+                      clearAuthError();
+                      setLocalValidationError(null);
+                    }}
+                    className="text-[11px] font-semibold text-blue-600 dark:text-cyan-400 hover:underline cursor-pointer"
+                  >
+                    {strings.auth.forgotPassword}
+                  </button>
+                )}
+              </div>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  id="auth-password"
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  minLength={6}
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    setLocalValidationError(null);
+                  }}
+                  placeholder={authTab === 'signup' ? 'At least 6 characters' : 'Your password'}
+                  className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl pl-10 pr-12 py-2 text-sm text-slate-900 dark:text-white"
+                />
                 <button
                   type="button"
-                  onClick={() => {
-                    setAuthTab('reset');
-                    clearAuthError();
-                  }}
-                  className="text-[11px] font-semibold text-blue-600 dark:text-cyan-400 hover:underline cursor-pointer"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  aria-label={showPassword ? strings.auth.hidePasswordLabel : strings.auth.showPasswordLabel}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white cursor-pointer"
                 >
-                  {strings.auth.forgotPassword}
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
-              )}
+              </div>
             </div>
-            <div className="relative">
-              <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-              <input
-                id="auth-password"
-                type="password"
-                required
-                minLength={6}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder={authTab === 'signup' ? 'At least 6 characters' : 'Your password'}
-                className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl pl-10 pr-3.5 py-2 text-sm text-slate-900 dark:text-white"
-              />
-            </div>
+
+            {authTab === 'signup' && (
+              <div>
+                <label
+                  htmlFor="auth-confirm-password"
+                  className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1"
+                >
+                  {strings.auth.confirmPasswordLabel}
+                </label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    id="auth-confirm-password"
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    required
+                    minLength={6}
+                    value={confirmPassword}
+                    onChange={(e) => {
+                      setConfirmPassword(e.target.value);
+                      setLocalValidationError(null);
+                    }}
+                    placeholder="Re-enter your password"
+                    className={`w-full min-h-[44px] bg-white dark:bg-[#11192C] border rounded-xl pl-10 pr-12 py-2 text-sm text-slate-900 dark:text-white ${
+                      confirmPassword && confirmPassword !== password
+                        ? 'border-rose-400 dark:border-rose-500'
+                        : 'border-slate-200 dark:border-slate-700'
+                    }`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword((prev) => !prev)}
+                    aria-label={
+                      showConfirmPassword
+                        ? `${strings.auth.hidePasswordLabel} confirmation`
+                        : `${strings.auth.showPasswordLabel} confirmation`
+                    }
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white cursor-pointer"
+                  >
+                    {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

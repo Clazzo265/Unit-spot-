@@ -3,6 +3,8 @@ import { useApp } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
 import { canManageGroupRole } from '../../utils/centralizedFinancialAdmin';
 import { Modal } from '../ui/Modal';
+import { FileUploadField, UploadedFileState } from '../ui/FileUploadField';
+import { updateFirebaseProfileAvatar } from '../../firebase/config';
 import {
   CheckCircle2,
   RotateCcw,
@@ -42,6 +44,7 @@ export const UserSettingsAndProfileView: React.FC = () => {
   const [email, setEmail] = useState(currentUser?.email || '');
   const [phone, setPhone] = useState(currentUser?.phone || '');
   const [roomNumber, setRoomNumber] = useState(currentUser?.roomNumber || '');
+  const [avatarUpload, setAvatarUpload] = useState<UploadedFileState | null>(null);
   const [savedSuccess, setSavedSuccess] = useState(false);
 
   const [auditSearch, setAuditSearch] = useState('');
@@ -60,18 +63,28 @@ export const UserSettingsAndProfileView: React.FC = () => {
 
   if (!currentUser) return null;
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    const nextAvatar = avatarUpload?.url || currentUser.avatarUrl;
+    if (avatarUpload?.url) {
+      try {
+        await updateFirebaseProfileAvatar(avatarUpload.url);
+      } catch (err) {
+        console.warn('Could not sync Firebase Auth photoURL:', err);
+      }
+    }
     setCurrentUser({
       ...currentUser,
       name: name.trim() || currentUser.name,
       email: currentUser.email,
       phone: phone.trim() || undefined,
       roomNumber: roomNumber.trim() || undefined,
+      avatarUrl: nextAvatar,
     });
+    setAvatarUpload(null);
     setSavedSuccess(true);
     showToast('Profile saved', {
-      message: 'Administrator contact details updated.',
+      message: 'Your profile and contact details have been updated.',
       variant: 'success',
     });
     setTimeout(() => setSavedSuccess(false), 2500);
@@ -181,6 +194,35 @@ export const UserSettingsAndProfileView: React.FC = () => {
               <span>Profile details updated successfully.</span>
             </div>
           )}
+
+          <div className="flex flex-col sm:flex-row sm:items-center gap-4 pb-2 border-b border-slate-100 dark:border-slate-800/80">
+            <div className="flex items-center gap-3 shrink-0">
+              {avatarUpload?.previewUrl || avatarUpload?.url || currentUser.avatarUrl ? (
+                <img
+                  src={avatarUpload?.previewUrl || avatarUpload?.url || currentUser.avatarUrl}
+                  alt={currentUser.name}
+                  referrerPolicy="no-referrer"
+                  className="w-16 h-16 rounded-2xl object-cover border border-slate-200 dark:border-slate-700"
+                />
+              ) : (
+                <div className="w-16 h-16 rounded-2xl bg-slate-900 dark:bg-blue-600 text-white font-extrabold text-xl flex items-center justify-center">
+                  {currentUser.name.charAt(0).toUpperCase()}
+                </div>
+              )}
+            </div>
+            <div className="flex-1 min-w-0">
+              <FileUploadField
+                label="Profile Photo (Optional)"
+                helperText="Upload a profile photo (JPG, PNG, or WebP up to 5 MB), then tap Save Profile."
+                folder="avatars"
+                recordIdPrefix={`avatar_${currentUser.id}`}
+                allowPdf={false}
+                allowCamera
+                value={avatarUpload}
+                onChange={setAvatarUpload}
+              />
+            </div>
+          </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>

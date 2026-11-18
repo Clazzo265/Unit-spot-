@@ -121,12 +121,6 @@ export function validateTransactionReference(
   const trimmed = (reference || '').trim();
 
   if (method === 'cash') {
-    if (!trimmed && !hasReceiptImage) {
-      return {
-        valid: false,
-        error: 'Cash payments require a Receipt / Slip Number or a receipt photo.',
-      };
-    }
     if (trimmed && trimmed.length < 2) {
       return { valid: false, error: 'Cash receipt / slip number must be at least 2 characters.' };
     }
@@ -221,6 +215,188 @@ export function resolveMemberInfo(
 
 export function isAccommodationGroup(group?: Pick<Group, 'category'> | null): boolean {
   return Boolean(group && supportsAccommodationRates(group.category));
+}
+
+/**
+ * Stove-tier billing (Electric MK 10,000 / Non-Electric MK 5,000) applies ONLY
+ * when the group is Shared House or Student Hostel AND the contribution is Electricity.
+ */
+export function isStoveBillingApplicable(
+  group?: Pick<Group, 'category'> | null,
+  category?: string | null
+): boolean {
+  return isAccommodationGroup(group) && category === 'electricity';
+}
+
+export interface PercentageAllocationEntry {
+  memberId: string;
+  percentage: number;
+}
+
+export interface PercentageAllocationResult {
+  valid: boolean;
+  error?: string;
+  totalPercentageBasisPoints: number;
+  shares: Array<{ memberId: string; percentage: number; amount: number }>;
+}
+
+/**
+ * Allocate an integer MWK total across members by percentage so rounded shares ALWAYS
+ * sum strictly to totalTargetInt using Hamilton's Largest Remainder Method.
+ * Requires total percentages to equal 100.00% (within 0.01% = 1 basis point precision).
+ */
+export function allocateByPercentage(
+  totalTargetInt: number,
+  entries: PercentageAllocationEntry[]
+): PercentageAllocationResult {
+  const safeTotal = toSafeIntMWK(totalTargetInt);
+  if (safeTotal <= 0) {
+    return {
+      valid: false,
+      error: 'Total target amount must be greater than MK 0.',
+      totalPercentageBasisPoints: 0,
+      shares: [],
+    };
+  }
+  if (entries.length === 0) {
+    return {
+      valid: false,
+      error: 'At least one active member is required.',
+      totalPercentageBasisPoints: 0,
+      shares: [],
+    };
+  }
+
+  let totalBasisPoints = 0;
+  const cleaned = entries.map((entry, index) => {
+    const pct = Number.isFinite(entry.percentage) ? entry.percentage : 0;
+    const bp = Math.round(pct * 100);
+    totalBasisPoints += bp;
+    return {
+      index,
+      memberId: entry.memberId,
+      percentage: pct,
+      basisPoints: bp,
+    };
+  });
+
+  if (cleaned.some((e) => e.basisPoints < 0 || !Number.isFinite(e.percentage))) {
+    return {
+      valid: false,
+      error: 'Percentages cannot be negative.',
+      totalPercentageBasisPoints: totalBasisPoints,
+      shares: [],
+    };
+  }
+
+  const positiveCount = cleaned.filter((e) => e.basisPoints > 0).length;
+  if (positiveCount === 0) {
+    return {
+      valid: false,
+      error: 'Enter positive percentages totaling 100%.',
+      totalPercentageBasisPoints: totalBasisPoints,
+      shares: [],
+    };
+  }
+
+  if (totalBasisPoints !== 10000) {
+    const formattedPct = (totalBasisPoints / 100).toFixed(2).replace(/\.00$/, '');
+    return {
+      valid: false,
+      error: `Percentages currently sum to ${formattedPct}%. They must equal 100%.`,
+      totalPercentageBasisPoints: totalBasisPoints,
+      shares: cleaned.map((c) => ({
+        memberId: c.memberId,
+        percentage: c.percentage,
+        amount: Math.round((safeTotal * c.basisPoints) / 10000),
+      })),
+    };
+  }
+
+  // Hamilton Largest Remainder Method on whole MWK integer shares
+  const exactItems = cleaned.map((item) => {
+    const exactNumer = safeTotal * item.basisPoints;
+    const floored = Math.floor(exactNumer / 10000);
+    const remainder = exactNumer % 10000;
+    return { ...item, floored, remainder, finalAmount: floored };
+  });
+
+  const flooredSum = exactItems.reduce((sum, item) => sum + item.floored, 0);
+  let remainingKwacha = safeTotal - flooredSum;
+
+  const sortedByRemainder = [...exactItems].sort((a, b) => {
+    if (b.remainder !== a.remainder) return b.remainder - a.remainder;
+    if (b.basisPoints !== a.basisPoints) return b.basisPoints - a.basisPoints;
+    return a.index - b.index;
+  });
+
+  for (let i = 0; i < sortedByRemainder.length && remainingKwacha > 0; i++) {
+    if (sortedByRemainder[i].basisPoints > 0) {
+      sortedByRemainder[i].finalAmount += 1;
+      remainingKwacha -= 1;
+    }
+  }
+
+  const byIndex = new Map<number, number>();
+  sortedByRemainder.forEach((item) => byIndex.set(item.index, item.finalAmount));
+
+  return {
+    valid: true,
+    totalPercentageBasisPoints: totalBasisPoints,
+    shares: cleaned.map((c) => ({
+      memberId: c.memberId,
+      percentage: c.percentage,
+      amount: byIndex.get(c.index) ?? 0,
+    })),
+  };
+}
+
+export function validateCustomAllocations(
+  totalTargetInt: number,
+  entries: Array<{ memberId: string; amount: number }>
+): { valid: boolean; error?: string; sum: number } {
+  const safeTarget = toSafeIntMWK(totalTargetInt);
+  if (safeTarget <= 0) {
+    return { valid: false, error: 'Total target amount must be greater than MK 0.', sum: 0 };
+  }
+  if (entries.length === 0) {
+    return { valid: false, error: 'At least one member must be assigned a share.', sum: 0 };
+  }
+  let sum = 0;
+  for (const entry of entries) {
+    if (!Number.isFinite(entry.amount) || !Number.isInteger(entry.amount) || entry.amount < 0) {
+      return {
+        valid: false,
+        error: 'Each member share must be a non-negative whole MWK integer.',
+        sum,
+      };
+    }
+    sum += entry.amount;
+  }
+  if (sum !== safeTarget) {
+    const diff = sum - safeTarget;
+    const diffFormatted = `MK ${Math.abs(diff).toLocaleString('en-US')}`;
+    return {
+      valid: false,
+      error:
+        diff > 0
+          ? `Member shares exceed target by ${diffFormatted}. Adjust shares so the total equals MK ${safeTarget.toLocaleString('en-US')}.`
+          : `Member shares are ${diffFormatted} below the target of MK ${safeTarget.toLocaleString('en-US')}.`,
+      sum,
+    };
+  }
+  return { valid: true, sum };
+}
+
+export function formatDeadlineLabel(deadline?: string | null, hasNoDeadline?: boolean): string {
+  if (hasNoDeadline || !deadline || !deadline.trim()) {
+    return 'No fixed deadline';
+  }
+  const dt = new Date(deadline);
+  if (Number.isNaN(dt.getTime())) {
+    return 'No fixed deadline';
+  }
+  return dt.toLocaleDateString();
 }
 
 export function generateJoinCode(prefix: string = 'US'): string {

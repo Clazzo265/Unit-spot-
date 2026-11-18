@@ -8,6 +8,7 @@ import {
   canManageGroupRole,
   canVerifyPaymentsRole,
 } from '../../utils/centralizedFinancialAdmin';
+import { formatFileSize } from '../../firebase/config';
 import { Modal } from '../ui/Modal';
 import { EmptyState } from '../ui/EmptyState';
 import {
@@ -20,6 +21,8 @@ import {
   Flag,
   AlertCircle,
   Image as ImageIcon,
+  FileText,
+  ExternalLink,
 } from 'lucide-react';
 
 export const PaymentHistoryAndVerificationView: React.FC<{
@@ -642,28 +645,63 @@ export const PaymentHistoryAndVerificationView: React.FC<{
               </div>
             )}
 
-            {selectedPaymentForReview.receiptImageUrl ||
-            selectedPaymentForReview.receiptEvidenceUrl ? (
-              <div className="space-y-1.5">
-                <span className="font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider text-[11px] block">
-                  Attached Receipt Picture
-                </span>
-                <div className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-slate-950 flex items-center justify-center max-h-60">
-                  <img
-                    src={
-                      selectedPaymentForReview.receiptImageUrl ||
-                      selectedPaymentForReview.receiptEvidenceUrl
-                    }
-                    alt="Captured transaction receipt"
-                    className="w-full max-h-60 object-contain"
-                  />
+            {(() => {
+              const receiptUrl =
+                selectedPaymentForReview.receiptImageUrl ||
+                selectedPaymentForReview.receiptEvidenceUrl;
+              if (!receiptUrl) {
+                return (
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 text-center">
+                    No receipt file uploaded. Recorded with transaction reference.
+                  </div>
+                );
+              }
+              const isPdf =
+                selectedPaymentForReview.receiptFileType === 'application/pdf' ||
+                receiptUrl.toLowerCase().includes('.pdf') ||
+                Boolean(selectedPaymentForReview.receiptFileName?.toLowerCase().endsWith('.pdf'));
+
+              return (
+                <div className="space-y-1.5">
+                  <span className="font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider text-[11px] block">
+                    Attached Receipt {isPdf ? 'Document' : 'Picture'}
+                  </span>
+                  {isPdf ? (
+                    <a
+                      href={receiptUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center justify-between gap-3 p-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#11192C] hover:border-blue-500 transition-colors"
+                    >
+                      <span className="flex items-center gap-2.5 min-w-0">
+                        <FileText className="w-5 h-5 text-blue-600 dark:text-cyan-400 shrink-0" />
+                        <span className="min-w-0">
+                          <span className="font-bold text-slate-900 dark:text-white block truncate">
+                            {selectedPaymentForReview.receiptFileName || 'Receipt.pdf'}
+                          </span>
+                          {selectedPaymentForReview.receiptFileSize ? (
+                            <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                              PDF · {formatFileSize(selectedPaymentForReview.receiptFileSize)}
+                            </span>
+                          ) : null}
+                        </span>
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-blue-600 dark:text-cyan-400 font-bold shrink-0">
+                        Open PDF <ExternalLink className="w-3.5 h-3.5" />
+                      </span>
+                    </a>
+                  ) : (
+                    <div className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-slate-950 flex items-center justify-center max-h-60">
+                      <img
+                        src={receiptUrl}
+                        alt="Captured transaction receipt"
+                        className="w-full max-h-60 object-contain"
+                      />
+                    </div>
+                  )}
                 </div>
-              </div>
-            ) : (
-              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 text-center">
-                No receipt image uploaded. Recorded with transaction reference.
-              </div>
-            )}
+              );
+            })()}
 
             <div className="bg-slate-50 dark:bg-[#11192C] p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-2 tabular-nums">
               <div className="flex justify-between">

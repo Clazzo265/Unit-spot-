@@ -93,10 +93,199 @@ function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([bytes], { type: mime });
 }
 
+export interface UploadedFileMetadata {
+  url: string;
+  storagePath: string;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  uploadedToCloud: true;
+}
+
+export interface FileUploadOptions {
+  folder: 'receipts' | 'supportingDocs' | 'avatars';
+  groupId?: string;
+  recordId: string;
+  file: Blob | File;
+  fileName: string;
+  contentType?: string;
+  maxSizeBytes?: number;
+  scopeMeta?: { uploaderUid?: string; adminId?: string; treasurerId?: string };
+  onProgress?: (pct: number) => void;
+  onTaskCreated?: (cancel: () => void) => void;
+}
+
+export function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 KB';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function mapStorageErrorMessage(err: unknown): string {
+  const code = (err as { code?: string })?.code || '';
+  const msg = err instanceof Error ? err.message : String(err || '');
+
+  if (code === 'storage/canceled' || msg.toLowerCase().includes('cancel')) {
+    return 'Upload cancelled.';
+  }
+  if (code === 'storage/unauthorized') {
+    return 'Permission denied by Storage security rules. Ensure your account email is verified and you belong to this group.';
+  }
+  if (code === 'storage/unauthenticated') {
+    return 'Please sign in with a verified account before uploading files.';
+  }
+  if (code === 'storage/retry-limit-exceeded' || msg.toLowerCase().includes('timeout')) {
+    return 'Upload timed out on a slow connection. Keep your form details and tap Retry.';
+  }
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return 'You are offline. Reconnect to the internet and tap Retry to upload this file.';
+  }
+  return msg || 'Could not upload file to cloud storage. Check your connection and tap Retry.';
+}
+
 /**
- * Upload compressed receipt image to Firebase Storage under a UID-scoped path when authenticated & online.
- * Path: receipts/${groupId}/${uploaderUid}/${recordId}.jpg
- * Attaches customMetadata (groupId, uploaderUid, adminId, treasurerId) so Storage rules restrict access.
+ * Genuine Firebase Storage upload using uploadBytesResumable.
+ * Emits real byte-transfer percentages (0..100%) and rejects honestly on offline/rules/timeout errors.
+ */
+export async function uploadFileToCloudStorage(
+  options: FileUploadOptions
+): Promise<UploadedFileMetadata> {
+  const {
+    folder,
+    groupId,
+    recordId,
+    file,
+    fileName,
+    contentType,
+    maxSizeBytes = 5 * 1024 * 1024,
+    scopeMeta,
+    onProgress,
+    onTaskCreated,
+  } = options;
+
+  const resolvedType = contentType || file.type || 'application/octet-stream';
+  const isImage = resolvedType.startsWith('image/');
+  const isPdf = resolvedType === 'application/pdf';
+
+  if (folder === 'avatars' && !isImage) {
+    throw new Error('Profile photo must be an image file (JPG, PNG, or WebP).');
+  }
+  if (folder !== 'avatars' && !isImage && !isPdf) {
+    throw new Error('Only image files (JPG, PNG, WebP) or PDF documents are supported.');
+  }
+  if (file.size <= 0) {
+    throw new Error('Selected file is empty.');
+  }
+  if (file.size > maxSizeBytes) {
+    throw new Error(`File exceeds maximum size of ${formatFileSize(maxSizeBytes)}. Please choose a smaller file.`);
+  }
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error('You appear to be offline. Reconnect to upload this file, or submit without attaching it if optional.');
+  }
+
+  const uploaderUid = auth.currentUser?.uid || scopeMeta?.uploaderUid;
+  if (!uploaderUid) {
+    throw new Error('Please sign in first before uploading files.');
+  }
+
+  const safeRecordId = recordId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const cleanExtMatch = fileName.match(/\.([a-zA-Z0-9]+)$/);
+  const fallbackExt = isPdf ? 'pdf' : isImage ? (resolvedType.split('/')[1] || 'jpg').replace(/[^a-zA-Z0-9]/g, '') : 'bin';
+  const ext = (cleanExtMatch ? cleanExtMatch[1].toLowerCase() : fallbackExt) || 'bin';
+  const safeFileName = `${safeRecordId}.${ext}`;
+
+  let path: string;
+  if (folder === 'avatars') {
+    path = `avatars/${uploaderUid}/${safeFileName}`;
+  } else {
+    const safeGroupId = (groupId || 'general').replace(/[^a-zA-Z0-9_-]/g, '_');
+    path = `${folder}/${safeGroupId}/${uploaderUid}/${safeFileName}`;
+  }
+
+  const customMetadata: Record<string, string> = {
+    uploaderUid,
+    originalName: fileName.slice(0, 140),
+    ...(groupId ? { groupId: groupId.replace(/[^a-zA-Z0-9_-]/g, '_') } : {}),
+    ...(scopeMeta?.adminId ? { adminId: scopeMeta.adminId } : {}),
+    ...(scopeMeta?.treasurerId ? { treasurerId: scopeMeta.treasurerId } : {}),
+  };
+
+  const fileRef = storageRef(storage, path);
+  const task = uploadBytesResumable(fileRef, file, {
+    contentType: resolvedType,
+    customMetadata,
+  });
+
+  onTaskCreated?.(() => {
+    try {
+      task.cancel();
+    } catch {
+      // no-op
+    }
+  });
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const downloadUrl = await Promise.race<string>([
+      new Promise<string>((resolve, reject) => {
+        onProgress?.(0);
+        task.on(
+          'state_changed',
+          (snapshot) => {
+            if (snapshot.totalBytes > 0 && onProgress) {
+              const pct = Math.min(
+                99,
+                Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100)
+              );
+              onProgress(pct);
+            }
+          },
+          (err) => reject(new Error(mapStorageErrorMessage(err))),
+          async () => {
+            try {
+              const url = await getDownloadURL(task.snapshot.ref);
+              onProgress?.(100);
+              resolve(url);
+            } catch (urlErr) {
+              reject(new Error(mapStorageErrorMessage(urlErr)));
+            }
+          }
+        );
+      }),
+      new Promise<string>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          try {
+            task.cancel();
+          } catch {
+            // no-op
+          }
+          reject(new Error('Upload timed out after 30 seconds. Please check your connection and tap Retry.'));
+        }, 30000);
+      }),
+    ]);
+
+    return {
+      url: downloadUrl,
+      storagePath: path,
+      fileName,
+      fileType: resolvedType,
+      fileSize: file.size,
+      uploadedToCloud: true,
+    };
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+export async function updateFirebaseProfileAvatar(photoUrl: string): Promise<void> {
+  if (!auth.currentUser) return;
+  await updateProfile(auth.currentUser, { photoURL: photoUrl });
+}
+
+/**
+ * Legacy helper preserved for data URL uploads (now throws real errors instead of faking cloud success).
  */
 export async function uploadReceiptImage(
   groupId: string,
@@ -106,65 +295,20 @@ export async function uploadReceiptImage(
   scopeMeta?: { uploaderUid?: string; adminId?: string; treasurerId?: string }
 ): Promise<{ url: string; storagePath?: string; uploadedToCloud: boolean }> {
   if (!dataUrl || !dataUrl.startsWith('data:image/')) {
-    return { url: dataUrl, uploadedToCloud: false };
+    throw new Error('Invalid image data for upload.');
   }
-
-  const uploaderUid = auth.currentUser?.uid || scopeMeta?.uploaderUid;
-  if (!uploaderUid) {
-    return { url: dataUrl, uploadedToCloud: false };
-  }
-
-  const safeGroupId = groupId.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const safeRecordId = recordId.replace(/[^a-zA-Z0-9_-]/g, '_');
-
-  try {
-    const blob = dataUrlToBlob(dataUrl);
-    const path = `receipts/${safeGroupId}/${uploaderUid}/${safeRecordId}.jpg`;
-    const fileRef = storageRef(storage, path);
-
-    const customMetadata: Record<string, string> = {
-      groupId: safeGroupId,
-      uploaderUid,
-      ...(scopeMeta?.adminId ? { adminId: scopeMeta.adminId } : {}),
-      ...(scopeMeta?.treasurerId ? { treasurerId: scopeMeta.treasurerId } : {}),
-    };
-
-    const downloadUrl = await Promise.race<string>([
-      new Promise<string>((resolve, reject) => {
-        const task = uploadBytesResumable(fileRef, blob, {
-          contentType: blob.type || 'image/jpeg',
-          customMetadata,
-        });
-        task.on(
-          'state_changed',
-          (snapshot) => {
-            if (snapshot.totalBytes > 0 && onProgress) {
-              const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
-              onProgress(pct);
-            }
-          },
-          (err) => reject(err),
-          async () => {
-            try {
-              const url = await getDownloadURL(task.snapshot.ref);
-              onProgress?.(100);
-              resolve(url);
-            } catch (urlErr) {
-              reject(urlErr);
-            }
-          }
-        );
-      }),
-      new Promise<string>((_, reject) =>
-        setTimeout(() => reject(new Error('Storage upload timeout')), 12000)
-      ),
-    ]);
-
-    return { url: downloadUrl, storagePath: path, uploadedToCloud: true };
-  } catch (err) {
-    console.warn('Firebase Storage receipt upload unavailable; storing compressed preview fallback:', err);
-    return { url: dataUrl, uploadedToCloud: false };
-  }
+  const blob = dataUrlToBlob(dataUrl);
+  const res = await uploadFileToCloudStorage({
+    folder: 'receipts',
+    groupId,
+    recordId,
+    file: blob,
+    fileName: `${recordId}.jpg`,
+    contentType: blob.type || 'image/jpeg',
+    scopeMeta,
+    onProgress,
+  });
+  return { url: res.url, storagePath: res.storagePath, uploadedToCloud: true };
 }
 
 export enum OperationType {

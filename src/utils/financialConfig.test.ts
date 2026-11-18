@@ -10,7 +10,12 @@ import {
   validateTransactionReference,
   resolveMemberInfo,
   auditAndRepairFinancialData,
+  isStoveBillingApplicable,
+  allocateByPercentage,
+  validateCustomAllocations,
+  formatDeadlineLabel,
 } from './financialConfig';
+import { GROUP_PRESETS } from './groupPresets';
 import {
   calculateVerifiedPaidForAssignment,
   calculatePendingPaidForAssignment,
@@ -74,8 +79,9 @@ describe('Authoritative Financial Config, Integrity Repair, Reversals & RBAC', (
 
     assert.equal(validateTransactionReference('tnm_mpamba', 'MP992817', false).valid, true);
     assert.equal(validateTransactionReference('bank_transfer', 'NBM-2026-0091', false).valid, true);
-    assert.equal(validateTransactionReference('cash', '', false).valid, false);
+    assert.equal(validateTransactionReference('cash', '', false).valid, true);
     assert.equal(validateTransactionReference('cash', 'R-12', false).valid, true);
+    assert.equal(validateTransactionReference('cash', 'A', false).valid, false);
   });
 
   test('4. Payment lifecycles: only verified sums reduce balance; reversed/disputed/rejected/pending are excluded', () => {
@@ -466,5 +472,88 @@ describe('Authoritative Financial Config, Integrity Repair, Reversals & RBAC', (
     assert.equal(merged[0].name, 'Chisomo Admin');
     assert.equal(merged[0].email, 'cchilongo88@gmail.com');
   });
+
+  test('9. Percentage Split (Hamilton Largest Remainder Method) always sums strictly to whole MWK target', () => {
+    // Odd indivisible case: MK 10,000 split 33.33 / 33.33 / 33.34
+    const oddSplit = allocateByPercentage(10000, [
+      { memberId: 'm1', percentage: 33.33 },
+      { memberId: 'm2', percentage: 33.33 },
+      { memberId: 'm3', percentage: 33.34 },
+    ]);
+    assert.equal(oddSplit.valid, true);
+    const oddSum = oddSplit.shares.reduce((s, item) => s + item.amount, 0);
+    assert.equal(oddSum, 10000);
+
+    // Uneven integer MK 10,001 split 50 / 25 / 25 -> largest remainder ensures strict equality
+    const remainderSplit = allocateByPercentage(10001, [
+      { memberId: 'a', percentage: 50 },
+      { memberId: 'b', percentage: 25 },
+      { memberId: 'c', percentage: 25 },
+    ]);
+    assert.equal(remainderSplit.valid, true);
+    assert.equal(
+      remainderSplit.shares.reduce((s, item) => s + item.amount, 0),
+      10001
+    );
+
+    // Rejects under-100%, over-100%, and negative percentages
+    assert.equal(
+      allocateByPercentage(50000, [
+        { memberId: 'a', percentage: 60 },
+        { memberId: 'b', percentage: 30 },
+      ]).valid,
+      false
+    );
+    assert.equal(
+      allocateByPercentage(50000, [
+        { memberId: 'a', percentage: 60 },
+        { memberId: 'b', percentage: 50 },
+      ]).valid,
+      false
+    );
+    assert.equal(
+      allocateByPercentage(50000, [
+        { memberId: 'a', percentage: 110 },
+        { memberId: 'b', percentage: -10 },
+      ]).valid,
+      false
+    );
+  });
+
+  test('10. Custom allocation reconciliation, strictly scoped stove billing, optional deadlines, and zero Equal Share presets', () => {
+    assert.equal(
+      validateCustomAllocations(25000, [
+        { memberId: 'm1', amount: 15000 },
+        { memberId: 'm2', amount: 10000 },
+      ]).valid,
+      true
+    );
+    assert.equal(
+      validateCustomAllocations(25000, [
+        { memberId: 'm1', amount: 15000 },
+        { memberId: 'm2', amount: 8000 },
+      ]).valid,
+      false
+    );
+
+    // Stove billing applies ONLY to house/hostel + electricity
+    assert.equal(isStoveBillingApplicable({ category: 'house' }, 'electricity'), true);
+    assert.equal(isStoveBillingApplicable({ category: 'hostel' }, 'electricity'), true);
+    assert.equal(isStoveBillingApplicable({ category: 'house' }, 'water'), false);
+    assert.equal(isStoveBillingApplicable({ category: 'house' }, 'rent'), false);
+    assert.equal(isStoveBillingApplicable({ category: 'church' }, 'electricity'), false);
+    assert.equal(isStoveBillingApplicable({ category: 'savings_group' }, 'savings'), false);
+
+    // Optional deadline formatting never produces "Invalid Date"
+    assert.equal(formatDeadlineLabel('', true), 'No fixed deadline');
+    assert.equal(formatDeadlineLabel('', false), 'No fixed deadline');
+    assert.equal(formatDeadlineLabel('not-a-date', false), 'No fixed deadline');
+    assert.notEqual(formatDeadlineLabel('2026-11-30T23:59:59Z', false), 'Invalid Date');
+
+    // Verify no group preset uses 'equal' as a default allocation mode
+    const presetModes = Object.values(GROUP_PRESETS).map((p) => p.defaultAllocationMode);
+    assert.equal(presetModes.includes('equal' as unknown as 'custom'), false);
+  });
 });
+
 

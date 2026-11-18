@@ -6,17 +6,21 @@ import { formatMWK } from '../../utils/financialCalculations';
 import {
   RATES,
   STOVE_TYPE_LABELS,
-  isAccommodationGroup,
+  allocateByPercentage,
+  formatDeadlineLabel,
+  isStoveBillingApplicable,
   isValidStoveType,
   parseMWKInput,
   resolveMemberInfo,
+  validateCustomAllocations,
 } from '../../utils/financialConfig';
 import {
-  EXPENSE_CATEGORY_LABELS,
+  ORDERED_CONTRIBUTION_CATEGORIES,
   getExpenseCategoryLabel,
   getGroupPreset,
 } from '../../utils/groupPresets';
 import { Modal } from '../ui/Modal';
+import { FileUploadField, UploadedFileState } from '../ui/FileUploadField';
 import { Plus, AlertCircle, CheckCircle2, AlertTriangle } from 'lucide-react';
 
 interface CreateContributionModalProps {
@@ -24,15 +28,29 @@ interface CreateContributionModalProps {
   onClose: () => void;
 }
 
+function buildStarterPercentages(memberIds: string[]): Record<string, string> {
+  if (memberIds.length === 0) return {};
+  const count = memberIds.length;
+  const baseBp = Math.floor(10000 / count);
+  let rem = 10000 - baseBp * count;
+  const out: Record<string, string> = {};
+  memberIds.forEach((id, idx) => {
+    const bp = baseBp + (idx === count - 1 ? rem : 0);
+    if (idx === count - 1) rem = 0;
+    const pctStr = (bp / 100).toFixed(2).replace(/\.00$/, '');
+    out[id] = pctStr;
+  });
+  return out;
+}
+
 export const CreateContributionModal: React.FC<CreateContributionModalProps> = ({
   isOpen,
   onClose,
 }) => {
-  const { currentGroup, groupMembers, users, createContribution } = useApp();
+  const { currentGroup, currentUser, groupMembers, users, createContribution } = useApp();
   const { showToast } = useToast();
 
   const preset = useMemo(() => getGroupPreset(currentGroup?.category), [currentGroup?.category]);
-  const showAccommodationStoveRate = isAccommodationGroup(currentGroup);
 
   const activeMembers = useMemo(() => {
     if (!currentGroup) return [];
@@ -44,6 +62,14 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
       }));
   }, [currentGroup, groupMembers, users]);
 
+  const responsibleCandidates = useMemo(() => {
+    if (!currentGroup) return [];
+    const managers = activeMembers.filter(
+      ({ member }) => member.roleInGroup === 'admin' || member.roleInGroup === 'treasurer'
+    );
+    return managers.length > 0 ? managers : activeMembers;
+  }, [activeMembers, currentGroup]);
+
   const membersMissingStove = useMemo(
     () => activeMembers.filter(({ member }) => !isValidStoveType(member.stoveType)),
     [activeMembers]
@@ -53,6 +79,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
   const [category, setCategory] = useState<ExpenseCategory>(
     preset.suggestedContributionCategories[0] || 'other'
   );
+  const [customCategoryLabel, setCustomCategoryLabel] = useState('');
   const [totalTargetAmount, setTotalTargetAmount] = useState<string>('');
   const [month] = useState<number>(new Date().getMonth() + 1);
   const [year] = useState<number>(new Date().getFullYear());
@@ -62,29 +89,73 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
     d.setDate(d.getDate() + 10);
     return d.toISOString().split('T')[0];
   });
+  const [hasNoDeadline, setHasNoDeadline] = useState<boolean>(false);
+  const [responsiblePersonId, setResponsiblePersonId] = useState<string>('');
   const [description, setDescription] = useState<string>('');
-  const [allocationMode, setAllocationMode] = useState<ContributionAllocationMode>(
-    showAccommodationStoveRate ? 'stove_rate' : preset.defaultAllocationMode
+  const [supportingDoc, setSupportingDoc] = useState<UploadedFileState | null>(null);
+  const [docUploadStatus, setDocUploadStatus] = useState<
+    'idle' | 'uploading' | 'uploaded' | 'error'
+  >('idle');
+
+  const stoveBillingApplicable = useMemo(
+    () => isStoveBillingApplicable(currentGroup, category),
+    [currentGroup, category]
   );
+
+  const resolveDefaultModeForCategory = (cat: ExpenseCategory): ContributionAllocationMode => {
+    if (isStoveBillingApplicable(currentGroup, cat)) {
+      return 'stove_rate';
+    }
+    return preset.defaultAllocationMode === 'stove_rate' ? 'percentage' : preset.defaultAllocationMode;
+  };
+
+  const [allocationMode, setAllocationMode] = useState<ContributionAllocationMode>(() =>
+    resolveDefaultModeForCategory(preset.suggestedContributionCategories[0] || 'other')
+  );
+
   const [customAmounts, setCustomAmounts] = useState<
     Record<string, { amount: string; notes: string }>
   >({});
+  const [percentageInputs, setPercentageInputs] = useState<Record<string, string>>({});
 
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState(false);
+  const [successInfo, setSuccessInfo] = useState<{
+    title: string;
+    totalTarget: number;
+    memberCount: number;
+    deadlineText: string;
+  } | null>(null);
 
   // Sync preset defaults whenever modal opens or active group changes
   useEffect(() => {
     if (!isOpen) return;
-    setCategory(preset.suggestedContributionCategories[0] || 'other');
-    const nextMode: ContributionAllocationMode = showAccommodationStoveRate
-      ? preset.defaultAllocationMode
+    const defaultCategory = preset.suggestedContributionCategories[0] || 'other';
+    setCategory(defaultCategory);
+    setCustomCategoryLabel('');
+    setHasNoDeadline(false);
+    const defaultMode: ContributionAllocationMode = isStoveBillingApplicable(
+      currentGroup,
+      defaultCategory
+    )
+      ? 'stove_rate'
       : preset.defaultAllocationMode === 'stove_rate'
-        ? 'equal'
+        ? 'percentage'
         : preset.defaultAllocationMode;
-    setAllocationMode(nextMode);
+    setAllocationMode(defaultMode);
+
+    const defaultResponsible =
+      currentGroup?.treasurerId ||
+      currentGroup?.adminId ||
+      responsibleCandidates[0]?.member.id ||
+      currentUser?.id ||
+      '';
+    setResponsiblePersonId(defaultResponsible);
+
+    const memberIds = activeMembers.map((m) => m.member.id);
+    setPercentageInputs(buildStarterPercentages(memberIds));
     setError('');
-  }, [isOpen, currentGroup?.id, preset, showAccommodationStoveRate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, currentGroup?.id, preset]);
 
   const applyStoveRateDistribution = () => {
     if (activeMembers.length === 0) return;
@@ -108,54 +179,96 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
     }
   };
 
-  const handleEqualDistribute = (total: number) => {
-    if (activeMembers.length === 0) return;
-    const perPerson = Math.floor(total / activeMembers.length);
-    const updated: Record<string, { amount: string; notes: string }> = {};
-    activeMembers.forEach(({ member }) => {
-      updated[member.id] = {
-        amount: String(perPerson),
-        notes: 'Equal share',
-      };
-    });
-    setCustomAmounts(updated);
-  };
-
   useEffect(() => {
-    if (!isOpen) return;
-    if (activeMembers.length > 0) {
-      if (allocationMode === 'stove_rate' && showAccommodationStoveRate) {
+    if (!isOpen || activeMembers.length === 0) return;
+    if (allocationMode === 'stove_rate') {
+      if (stoveBillingApplicable) {
         applyStoveRateDistribution();
-      } else if (allocationMode === 'equal' && totalTargetAmount) {
-        const parsed = parseMWKInput(totalTargetAmount);
-        if (parsed.valid) handleEqualDistribute(parsed.value);
+      } else {
+        setAllocationMode('percentage');
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, activeMembers.length, allocationMode, showAccommodationStoveRate]);
+  }, [isOpen, activeMembers.length, allocationMode, stoveBillingApplicable]);
 
-  const handleTotalChange = (val: string) => {
-    const clean = val.replace(/[^\d]/g, '');
-    setTotalTargetAmount(clean);
-    const parsed = parseMWKInput(clean);
-    if (parsed.valid && allocationMode === 'equal') {
-      handleEqualDistribute(parsed.value);
+  const handleCategoryChange = (nextCat: ExpenseCategory) => {
+    setCategory(nextCat);
+    if (nextCat !== 'other') {
+      setCustomCategoryLabel('');
+    }
+    const nextStoveApplicable = isStoveBillingApplicable(currentGroup, nextCat);
+    if (!nextStoveApplicable && allocationMode === 'stove_rate') {
+      setAllocationMode('percentage');
+      if (Object.keys(percentageInputs).length === 0) {
+        setPercentageInputs(buildStarterPercentages(activeMembers.map((m) => m.member.id)));
+      }
+    } else if (nextStoveApplicable && allocationMode !== 'stove_rate') {
+      setAllocationMode('stove_rate');
     }
   };
 
-  const calculatedSum = activeMembers.reduce((sum, { member }) => {
+  const parsedTargetDisplay = parseMWKInput(totalTargetAmount, { allowZero: true });
+  const targetInt = parsedTargetDisplay.valid ? parsedTargetDisplay.value : 0;
+
+  const percentageEntries = useMemo(
+    () =>
+      activeMembers.map(({ member }) => {
+        const raw = (percentageInputs[member.id] ?? '').trim();
+        const parsed = raw === '' ? 0 : Number.parseFloat(raw);
+        return {
+          memberId: member.id,
+          percentage: Number.isFinite(parsed) ? parsed : 0,
+        };
+      }),
+    [activeMembers, percentageInputs]
+  );
+
+  const percentagePreview = useMemo(() => {
+    if (allocationMode !== 'percentage' || targetInt <= 0) return null;
+    return allocateByPercentage(targetInt, percentageEntries);
+  }, [allocationMode, targetInt, percentageEntries]);
+
+  const totalEnteredBasisPoints = useMemo(
+    () => percentageEntries.reduce((sum, e) => sum + Math.round((e.percentage || 0) * 100), 0),
+    [percentageEntries]
+  );
+  const totalEnteredPctDisplay = (totalEnteredBasisPoints / 100).toFixed(2).replace(/\.00$/, '');
+
+  const customCalculatedSum = activeMembers.reduce((sum, { member }) => {
     const raw = customAmounts[member.id]?.amount;
     const parsed = parseMWKInput(raw, { allowZero: true });
     return sum + (parsed.valid ? parsed.value : 0);
   }, 0);
+
+  const displayedAllocatedSum =
+    allocationMode === 'percentage'
+      ? percentagePreview?.valid
+        ? percentagePreview.shares.reduce((s, item) => s + item.amount, 0)
+        : 0
+      : customCalculatedSum;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentGroup) return;
     setError('');
 
+    if (docUploadStatus === 'uploading') {
+      setError('Please wait for the supporting document upload to finish before submitting.');
+      return;
+    }
+
     if (!title.trim()) {
       setError('Please provide a contribution title.');
+      return;
+    }
+
+    if (category === 'other' && !customCategoryLabel.trim()) {
+      setError('Please enter a custom category label when selecting Other / Custom expense.');
+      return;
+    }
+
+    if (!hasNoDeadline && !deadline.trim()) {
+      setError('Please choose a due date or select "No fixed deadline".');
       return;
     }
 
@@ -166,17 +279,19 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
       return;
     }
 
-    if (
-      allocationMode === 'stove_rate' &&
-      showAccommodationStoveRate &&
-      membersMissingStove.length > 0
-    ) {
-      setError(
-        `Classify stove type (Electric or Non-Electric) in Directory for: ${membersMissingStove
-          .map((m) => m.member.name)
-          .join(', ')}.`
-      );
-      return;
+    if (allocationMode === 'stove_rate') {
+      if (!stoveBillingApplicable) {
+        setError('Stove rates apply only to Electricity requests in house or hostel groups.');
+        return;
+      }
+      if (membersMissingStove.length > 0) {
+        setError(
+          `Classify stove type (Electric or Non-Electric) in Directory for: ${membersMissingStove
+            .map((m) => m.member.name)
+            .join(', ')}.`
+        );
+        return;
+      }
     }
 
     const parsedTarget = parseMWKInput(totalTargetAmount);
@@ -185,38 +300,97 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
       return;
     }
 
-    const assignmentsPayload: { memberId: string; amount: number; notes?: string }[] = [];
-    for (const { member } of activeMembers) {
-      const custom = customAmounts[member.id];
-      const parsedMemberAmt = parseMWKInput(custom?.amount);
-      if (!parsedMemberAmt.valid) {
-        setError(
-          `Invalid amount for ${member.name}: ${parsedMemberAmt.error || 'Enter a whole MWK integer.'}`
-        );
+    const assignmentsPayload: {
+      memberId: string;
+      amount: number;
+      allocationPercentage?: number;
+      notes?: string;
+    }[] = [];
+
+    if (allocationMode === 'percentage') {
+      const pctResult = allocateByPercentage(parsedTarget.value, percentageEntries);
+      if (!pctResult.valid) {
+        setError(pctResult.error || 'Percentages must sum to 100%.');
         return;
       }
-      assignmentsPayload.push({
-        memberId: member.id,
-        amount: parsedMemberAmt.value,
-        notes: custom?.notes || (allocationMode === 'custom' ? 'custom' : undefined),
+      pctResult.shares.forEach((share) => {
+        assignmentsPayload.push({
+          memberId: share.memberId,
+          amount: share.amount,
+          allocationPercentage: share.percentage,
+          notes: `${share.percentage}% split`,
+        });
       });
+    } else if (allocationMode === 'custom') {
+      const entries: Array<{ memberId: string; amount: number; notes?: string }> = [];
+      for (const { member } of activeMembers) {
+        const custom = customAmounts[member.id];
+        const parsedMemberAmt = parseMWKInput(custom?.amount, { allowZero: true });
+        if (!parsedMemberAmt.valid) {
+          setError(
+            `Invalid amount for ${member.name}: ${parsedMemberAmt.error || 'Enter a whole MWK integer.'}`
+          );
+          return;
+        }
+        entries.push({
+          memberId: member.id,
+          amount: parsedMemberAmt.value,
+          notes: custom?.notes || 'Custom amount',
+        });
+      }
+      const reconciliation = validateCustomAllocations(parsedTarget.value, entries);
+      if (!reconciliation.valid) {
+        setError(reconciliation.error || 'Custom amounts must match Total Target.');
+        return;
+      }
+      if (entries.every((item) => item.amount === 0)) {
+        setError('At least one member must have an amount greater than MK 0.');
+        return;
+      }
+      entries
+        .filter((item) => item.amount > 0)
+        .forEach((item) => assignmentsPayload.push(item));
+    } else {
+      // Stove rate mode
+      for (const { member } of activeMembers) {
+        const custom = customAmounts[member.id];
+        const parsedMemberAmt = parseMWKInput(custom?.amount);
+        if (!parsedMemberAmt.valid) {
+          setError(
+            `Invalid amount for ${member.name}: ${parsedMemberAmt.error || 'Enter a whole MWK integer.'}`
+          );
+          return;
+        }
+        assignmentsPayload.push({
+          memberId: member.id,
+          amount: parsedMemberAmt.value,
+          notes: custom?.notes,
+        });
+      }
     }
 
-    const effectiveMode: ContributionAllocationMode =
-      allocationMode === 'stove_rate' && !showAccommodationStoveRate ? 'equal' : allocationMode;
+    const effectiveDeadline = hasNoDeadline ? '' : `${deadline}T23:59:59Z`;
 
     const result = createContribution(
       {
         groupId: currentGroup.id,
         title: title.trim(),
         category,
+        customCategoryLabel: category === 'other' ? customCategoryLabel.trim() : undefined,
         month,
         year,
         totalTargetAmount: parsedTarget.value,
-        deadline: `${deadline}T23:59:59Z`,
+        deadline: effectiveDeadline,
+        hasNoDeadline,
+        responsiblePersonId: responsiblePersonId || undefined,
         description: description.trim() || undefined,
+        supportingDocumentUrl: supportingDoc?.url,
+        supportingDocumentName: supportingDoc?.fileName,
+        supportingDocumentType: supportingDoc?.fileType,
+        supportingDocumentSize: supportingDoc?.fileSize,
+        supportingStoragePath: supportingDoc?.storagePath,
         status: 'active',
-        allocationMode: effectiveMode,
+        allocationMode,
       },
       assignmentsPayload
     );
@@ -226,31 +400,41 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
       return;
     }
 
+    const deadlineText = formatDeadlineLabel(effectiveDeadline, hasNoDeadline);
     showToast('Contribution Assigned', {
-      message: `${title.trim()} (${formatMWK(parsedTarget.value)}) assigned to ${activeMembers.length} member(s).`,
+      message: `${title.trim()} (${formatMWK(parsedTarget.value)}) assigned to ${assignmentsPayload.length} member(s).`,
     });
-    setSuccess(true);
+    setSuccessInfo({
+      title: title.trim(),
+      totalTarget: parsedTarget.value,
+      memberCount: assignmentsPayload.length,
+      deadlineText,
+    });
   };
 
   const resetAndClose = () => {
     setError('');
-    setSuccess(false);
+    setSuccessInfo(null);
     setTitle('');
+    setCustomCategoryLabel('');
     setTotalTargetAmount('');
     setCustomAmounts({});
+    setPercentageInputs({});
     setDescription('');
+    setSupportingDoc(null);
+    setDocUploadStatus('idle');
+    setHasNoDeadline(false);
     onClose();
   };
 
-  const parsedTargetDisplay = parseMWKInput(totalTargetAmount, { allowZero: true });
-  const targetInt = parsedTargetDisplay.valid ? parsedTargetDisplay.value : 0;
-
   const sortedCategories = useMemo(() => {
-    const suggested = new Set(preset.suggestedContributionCategories);
-    const allKeys = Object.keys(EXPENSE_CATEGORY_LABELS) as ExpenseCategory[];
+    const suggested = preset.suggestedContributionCategories.filter((c) =>
+      ORDERED_CONTRIBUTION_CATEGORIES.includes(c)
+    );
+    const suggestedSet = new Set(suggested);
     return [
-      ...preset.suggestedContributionCategories.filter((c) => allKeys.includes(c)),
-      ...allKeys.filter((c) => !suggested.has(c)),
+      ...suggested,
+      ...ORDERED_CONTRIBUTION_CATEGORIES.filter((c) => !suggestedSet.has(c)),
     ];
   }, [preset]);
 
@@ -259,7 +443,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
       isOpen={isOpen}
       onClose={resetAndClose}
       title="Set Member Contributions"
-      subtitle={currentGroup ? `Assign contributions for ${currentGroup.name}` : 'No group active'}
+      subtitle={currentGroup ? `Create a bill or contribution for ${currentGroup.name}` : 'No group active'}
       maxWidthClass="max-w-xl"
     >
       {!currentGroup ? (
@@ -275,7 +459,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
             Close
           </button>
         </div>
-      ) : success ? (
+      ) : successInfo ? (
         <div className="text-center py-6 space-y-3">
           <div className="w-12 h-12 bg-emerald-100 dark:bg-emerald-950/70 text-emerald-600 dark:text-emerald-400 rounded-full flex items-center justify-center mx-auto">
             <CheckCircle2 className="w-6 h-6" />
@@ -284,8 +468,11 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
             Contribution Assigned
           </h4>
           <p className="text-xs text-slate-600 dark:text-slate-400 max-w-sm mx-auto tabular-nums">
-            Target of <strong className="text-slate-900 dark:text-white">{formatMWK(targetInt)}</strong>{' '}
-            distributed across {activeMembers.length} active member(s).
+            <strong className="text-slate-900 dark:text-white">{successInfo.title}</strong> — Target of{' '}
+            <strong className="text-slate-900 dark:text-white">
+              {formatMWK(successInfo.totalTarget)}
+            </strong>{' '}
+            assigned across {successInfo.memberCount} member(s) · Due: {successInfo.deadlineText}.
           </p>
           <div className="pt-2">
             <button
@@ -316,9 +503,9 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
             <input
               type="text"
               placeholder={
-                showAccommodationStoveRate
-                  ? 'e.g. May ESCOM Electricity, Water Bill, Shared Rent'
-                  : `e.g. ${preset.label} — Monthly Pool`
+                stoveBillingApplicable
+                  ? 'e.g. May ESCOM Electricity, Lilongwe Water Bill'
+                  : `e.g. ${preset.label} — Monthly Need or Bill`
               }
               value={title}
               onChange={(e) => setTitle(e.target.value)}
@@ -327,20 +514,14 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
-                Category *
+                Bill / Need Category *
               </label>
               <select
                 value={category}
-                onChange={(e) => {
-                  const nextCat = e.target.value as ExpenseCategory;
-                  setCategory(nextCat);
-                  if (nextCat !== 'electricity' && allocationMode === 'stove_rate') {
-                    setAllocationMode('equal');
-                  }
-                }}
+                onChange={(e) => handleCategoryChange(e.target.value as ExpenseCategory)}
                 className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
               >
                 {sortedCategories.map((cat) => (
@@ -361,28 +542,85 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
                 pattern="[0-9]*"
                 placeholder="e.g. 50000"
                 value={totalTargetAmount}
-                onChange={(e) => handleTotalChange(e.target.value)}
-                readOnly={allocationMode === 'stove_rate' && showAccommodationStoveRate}
+                onChange={(e) => setTotalTargetAmount(e.target.value.replace(/[^\d]/g, ''))}
+                readOnly={allocationMode === 'stove_rate' && stoveBillingApplicable}
                 className={`w-full min-h-[44px] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-bold font-mono text-slate-900 dark:text-white tabular-nums focus:outline-none ${
-                  allocationMode === 'stove_rate' && showAccommodationStoveRate
+                  allocationMode === 'stove_rate' && stoveBillingApplicable
                     ? 'bg-slate-50 dark:bg-[#131D33]'
                     : 'bg-white dark:bg-[#11192C]'
                 }`}
                 required
               />
             </div>
+          </div>
+
+          {category === 'other' && (
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
+                Custom Category Name *
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Borehole Repair, Generator Fuel, Choir Uniforms"
+                value={customCategoryLabel}
+                onChange={(e) => setCustomCategoryLabel(e.target.value)}
+                className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
+                required
+              />
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                  Due Date {!hasNoDeadline && '*'}
+                </label>
+                <label className="inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-600 dark:text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={hasNoDeadline}
+                    onChange={(e) => setHasNoDeadline(e.target.checked)}
+                    className="rounded border-slate-300 text-blue-600"
+                  />
+                  <span>No fixed deadline</span>
+                </label>
+              </div>
+              <input
+                type="date"
+                value={hasNoDeadline ? '' : deadline}
+                disabled={hasNoDeadline}
+                onChange={(e) => setDeadline(e.target.value)}
+                className={`w-full min-h-[44px] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none ${
+                  hasNoDeadline
+                    ? 'bg-slate-100 dark:bg-[#131D33] opacity-60 cursor-not-allowed'
+                    : 'bg-white dark:bg-[#11192C]'
+                }`}
+                required={!hasNoDeadline}
+              />
+            </div>
 
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
-                Due Date *
+                Responsible Collector / Coordinator
               </label>
-              <input
-                type="date"
-                value={deadline}
-                onChange={(e) => setDeadline(e.target.value)}
+              <select
+                value={responsiblePersonId}
+                onChange={(e) => setResponsiblePersonId(e.target.value)}
                 className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
-                required
-              />
+              >
+                {responsibleCandidates.length === 0 ? (
+                  <option value={currentUser?.id || ''}>
+                    {currentUser?.name || 'Group Administrator'}
+                  </option>
+                ) : (
+                  responsibleCandidates.map(({ member }) => (
+                    <option key={member.id} value={member.id}>
+                      {member.name} ({member.roleInGroup})
+                    </option>
+                  ))
+                )}
+              </select>
             </div>
           </div>
 
@@ -390,17 +628,17 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
             <div className="pt-1 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300">
-                  How to Split
+                  How to Split Contributions
                 </span>
                 <div className="inline-flex p-1 bg-slate-100 dark:bg-[#11192C] rounded-xl border border-slate-200 dark:border-slate-800 text-xs">
-                  {showAccommodationStoveRate && (
+                  {stoveBillingApplicable && (
                     <button
                       type="button"
                       onClick={() => {
                         setAllocationMode('stove_rate');
                         applyStoveRateDistribution();
                       }}
-                      className={`min-h-[34px] px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                      className={`min-h-[36px] px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap ${
                         allocationMode === 'stove_rate'
                           ? 'bg-white dark:bg-blue-600 shadow-xs text-slate-900 dark:text-white font-bold'
                           : 'text-slate-600 dark:text-slate-400'
@@ -412,43 +650,47 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
                   <button
                     type="button"
                     onClick={() => {
-                      setAllocationMode('equal');
-                      if (targetInt > 0) handleEqualDistribute(targetInt);
+                      setAllocationMode('percentage');
+                      if (Object.keys(percentageInputs).length === 0) {
+                        setPercentageInputs(
+                          buildStarterPercentages(activeMembers.map((m) => m.member.id))
+                        );
+                      }
                     }}
-                    className={`min-h-[34px] px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                      allocationMode === 'equal'
+                    className={`min-h-[36px] px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                      allocationMode === 'percentage'
                         ? 'bg-white dark:bg-blue-600 shadow-xs text-slate-900 dark:text-white font-bold'
                         : 'text-slate-600 dark:text-slate-400'
                     }`}
                   >
-                    Equal Share
+                    Percentage Split (%)
                   </button>
                   <button
                     type="button"
                     onClick={() => setAllocationMode('custom')}
-                    className={`min-h-[34px] px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                    className={`min-h-[36px] px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap ${
                       allocationMode === 'custom'
                         ? 'bg-white dark:bg-blue-600 shadow-xs text-slate-900 dark:text-white font-bold'
                         : 'text-slate-600 dark:text-slate-400'
                     }`}
                   >
-                    Custom
+                    Custom Amounts
                   </button>
                 </div>
               </div>
 
               {allocationMode === 'stove_rate' &&
-                showAccommodationStoveRate &&
+                stoveBillingApplicable &&
                 membersMissingStove.length > 0 && (
                   <div className="p-3 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 rounded-xl text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                     <div>
                       <span className="font-bold block">
-                        Stove classification required before auto-splitting:
+                        Stove classification required for Electricity Stove Rate:
                       </span>
                       <span>
                         {membersMissingStove.map((m) => m.member.name).join(', ')} — classify in
-                        Group Directory first, or choose Equal Share / Custom.
+                        Group Directory first, or choose Percentage Split (%) / Custom Amounts.
                       </span>
                     </div>
                   </div>
@@ -458,87 +700,143 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
               <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden divide-y divide-slate-100 dark:divide-slate-800">
                 <div className="bg-slate-50 dark:bg-[#11192C] px-3.5 py-2 text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex justify-between">
                   <span>
-                    {showAccommodationStoveRate
+                    {stoveBillingApplicable
                       ? 'Active Member & Stove Tier'
                       : `Active Member (${preset.unitLabel})`}
                   </span>
-                  <span>Assigned MWK</span>
+                  <span>
+                    {allocationMode === 'percentage' ? '% Share & MWK' : 'Assigned MWK'}
+                  </span>
                 </div>
-                {activeMembers.map(({ member, info }) => (
-                  <div
-                    key={member.id}
-                    className="p-3 flex items-center justify-between gap-3 text-xs bg-white dark:bg-[#0D1424]"
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="w-7 h-7 rounded-full bg-slate-200 dark:bg-[#131D33] text-slate-800 dark:text-slate-200 flex items-center justify-center font-bold shrink-0">
-                        {member.name.charAt(0)}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="font-semibold text-slate-900 dark:text-white truncate">
-                          {member.name}
-                        </div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1.5 flex-wrap">
-                          <span>{info?.roomNumber || preset.shortLabel}</span>
-                          {showAccommodationStoveRate && (
-                            <>
-                              <span aria-hidden="true">·</span>
-                              {isValidStoveType(member.stoveType) ? (
-                                <span className="font-medium text-slate-700 dark:text-slate-300 tabular-nums">
-                                  {STOVE_TYPE_LABELS[member.stoveType]} (
-                                  {formatMWK(RATES[member.stoveType])})
-                                </span>
-                              ) : (
-                                <span className="text-amber-700 dark:text-amber-400 font-semibold">
-                                  Stove Type Unset
-                                </span>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
+                {activeMembers.map(({ member, info }) => {
+                  const pctShare = percentagePreview?.shares.find((s) => s.memberId === member.id);
 
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <span className="text-slate-400 font-medium">MK</span>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        pattern="[0-9]*"
-                        readOnly={allocationMode === 'stove_rate' && showAccommodationStoveRate}
-                        value={customAmounts[member.id]?.amount || ''}
-                        onChange={(e) => {
-                          const digits = e.target.value.replace(/[^\d]/g, '');
-                          setAllocationMode('custom');
-                          setCustomAmounts((prev) => ({
-                            ...prev,
-                            [member.id]: {
-                              amount: digits,
-                              notes: 'custom',
-                            },
-                          }));
-                        }}
-                        className={`w-24 min-h-[38px] border border-slate-200 dark:border-slate-700 rounded-lg px-2.5 py-1 text-xs font-bold font-mono text-slate-900 dark:text-white text-right tabular-nums focus:outline-none ${
-                          allocationMode === 'stove_rate' && showAccommodationStoveRate
-                            ? 'bg-slate-50 dark:bg-[#131D33]'
-                            : 'bg-white dark:bg-[#11192C]'
-                        }`}
-                      />
+                  return (
+                    <div
+                      key={member.id}
+                      className="p-3 flex items-center justify-between gap-3 text-xs bg-white dark:bg-[#0D1424]"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-7 h-7 rounded-full bg-slate-200 dark:bg-[#131D33] text-slate-800 dark:text-slate-200 flex items-center justify-center font-bold shrink-0">
+                          {member.name.charAt(0)}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-slate-900 dark:text-white truncate">
+                            {member.name}
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1.5 flex-wrap">
+                            <span>{info?.roomNumber || preset.shortLabel}</span>
+                            {stoveBillingApplicable && (
+                              <>
+                                <span aria-hidden="true">·</span>
+                                {isValidStoveType(member.stoveType) ? (
+                                  <span className="font-medium text-slate-700 dark:text-slate-300 tabular-nums">
+                                    {STOVE_TYPE_LABELS[member.stoveType]} (
+                                    {formatMWK(RATES[member.stoveType])})
+                                  </span>
+                                ) : (
+                                  <span className="text-amber-700 dark:text-amber-400 font-semibold">
+                                    Stove Type Unset
+                                  </span>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {allocationMode === 'percentage' ? (
+                        <div className="flex items-center gap-2 shrink-0 tabular-nums">
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              max="100"
+                              aria-label={`Percentage for ${member.name}`}
+                              value={percentageInputs[member.id] ?? ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setPercentageInputs((prev) => ({
+                                  ...prev,
+                                  [member.id]: val,
+                                }));
+                              }}
+                              className="w-20 min-h-[38px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 text-xs font-bold font-mono text-slate-900 dark:text-white text-right focus:outline-none"
+                            />
+                            <span className="text-slate-400 font-semibold">%</span>
+                          </div>
+                          <span className="w-24 text-right font-mono font-bold text-slate-800 dark:text-slate-200">
+                            {targetInt > 0 && pctShare ? formatMWK(pctShare.amount) : 'MK 0'}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="text-slate-400 font-medium">MK</span>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            aria-label={`MWK amount for ${member.name}`}
+                            readOnly={allocationMode === 'stove_rate' && stoveBillingApplicable}
+                            value={customAmounts[member.id]?.amount || ''}
+                            onChange={(e) => {
+                              const digits = e.target.value.replace(/[^\d]/g, '');
+                              setAllocationMode('custom');
+                              setCustomAmounts((prev) => ({
+                                ...prev,
+                                [member.id]: {
+                                  amount: digits,
+                                  notes: 'Custom amount',
+                                },
+                              }));
+                            }}
+                            className={`w-24 min-h-[38px] border border-slate-200 dark:border-slate-700 rounded-lg px-2.5 py-1 text-xs font-bold font-mono text-slate-900 dark:text-white text-right tabular-nums focus:outline-none ${
+                              allocationMode === 'stove_rate' && stoveBillingApplicable
+                                ? 'bg-slate-50 dark:bg-[#131D33]'
+                                : 'bg-white dark:bg-[#11192C]'
+                            }`}
+                          />
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
-              <div className="flex items-center justify-between text-xs px-1 tabular-nums">
-                <span className="text-slate-500 dark:text-slate-400">Allocated Sum:</span>
-                <span
-                  className={`font-bold font-mono ${
-                    calculatedSum === targetInt
-                      ? 'text-emerald-700 dark:text-emerald-400'
-                      : 'text-amber-700 dark:text-amber-400'
-                  }`}
-                >
-                  {formatMWK(calculatedSum)} / {formatMWK(targetInt)}
-                </span>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs px-1 tabular-nums">
+                {allocationMode === 'percentage' ? (
+                  <>
+                    <span className="text-slate-500 dark:text-slate-400">
+                      Total Percentage:{' '}
+                      <strong
+                        className={`font-mono ${
+                          totalEnteredBasisPoints === 10000
+                            ? 'text-emerald-700 dark:text-emerald-400'
+                            : 'text-amber-700 dark:text-amber-400'
+                        }`}
+                      >
+                        {totalEnteredPctDisplay}% / 100%
+                      </strong>
+                    </span>
+                    <span className="font-bold font-mono text-slate-800 dark:text-slate-200">
+                      {formatMWK(displayedAllocatedSum)} / {formatMWK(targetInt)}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-slate-500 dark:text-slate-400">Allocated Sum:</span>
+                    <span
+                      className={`font-bold font-mono ${
+                        displayedAllocatedSum === targetInt && targetInt > 0
+                          ? 'text-emerald-700 dark:text-emerald-400'
+                          : 'text-amber-700 dark:text-amber-400'
+                      }`}
+                    >
+                      {formatMWK(displayedAllocatedSum)} / {formatMWK(targetInt)}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
           ) : (
@@ -550,7 +848,7 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
 
           <div>
             <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
-              Note to Members (Optional)
+              Description / Note to Members (Optional)
             </label>
             <textarea
               rows={2}
@@ -560,6 +858,24 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
               className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200 focus:outline-none"
             />
           </div>
+
+          <FileUploadField
+            label="Supporting Bill / Invoice / Notice (Optional)"
+            helperText="Attach an ESCOM bill, water invoice, quotation, or notice (image or PDF, max 5 MB)."
+            folder="supportingDocs"
+            groupId={currentGroup.id}
+            recordIdPrefix="contrib"
+            scopeMeta={{
+              uploaderUid: currentUser?.id,
+              adminId: currentGroup.adminId,
+              treasurerId: currentGroup.treasurerId,
+            }}
+            allowPdf
+            allowCamera
+            value={supportingDoc}
+            onChange={setSupportingDoc}
+            onStatusChange={setDocUploadStatus}
+          />
 
           <div className="pt-2 flex items-center justify-end gap-3">
             <button
@@ -571,11 +887,13 @@ export const CreateContributionModal: React.FC<CreateContributionModalProps> = (
             </button>
             <button
               type="submit"
-              disabled={activeMembers.length === 0}
+              disabled={activeMembers.length === 0 || docUploadStatus === 'uploading'}
               className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 text-white px-5 py-2.5 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs whitespace-nowrap"
             >
               <Plus className="w-4 h-4" />
-              <span>Assign Contributions</span>
+              <span>
+                {docUploadStatus === 'uploading' ? 'Uploading Attachment...' : 'Assign Contributions'}
+              </span>
             </button>
           </div>
         </form>

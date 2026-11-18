@@ -13,9 +13,9 @@ import {
   resolveMemberInfo,
   STOVE_TYPE_LABELS,
   isValidStoveType,
-  isAccommodationGroup,
+  isStoveBillingApplicable,
 } from '../../utils/financialConfig';
-import { getGroupPreset } from '../../utils/groupPresets';
+import { getExpenseCategoryLabel, getGroupPreset } from '../../utils/groupPresets';
 import { Download, Printer, Building2 } from 'lucide-react';
 
 export const FinancialReportingView: React.FC = () => {
@@ -64,7 +64,17 @@ export const FinancialReportingView: React.FC = () => {
     totalApprovedExpenses
   );
 
-  const showStoveColumn = isAccommodationGroup(currentGroup);
+  const showStoveColumn = Boolean(
+    activeContribution
+      ? isStoveBillingApplicable(currentGroup, activeContribution.category) &&
+          (activeContribution.allocationMode === 'stove_rate' ||
+            relatedAssignments.some((a) => Boolean(a.stoveTypeAtAssignment)))
+      : groupContributions.some(
+          (c) =>
+            isStoveBillingApplicable(currentGroup, c.category) &&
+            c.allocationMode === 'stove_rate'
+        )
+  );
   const groupPreset = getGroupPreset(currentGroup.category);
 
   const handlePrint = () => {
@@ -195,6 +205,16 @@ export const FinancialReportingView: React.FC = () => {
               <div>
                 <strong>Currency:</strong> Malawi Kwacha ({currentGroup.defaultCurrency})
               </div>
+              {activeContribution && (
+                <div>
+                  <strong>Contribution:</strong> {activeContribution.title} (
+                  {getExpenseCategoryLabel(
+                    activeContribution.category,
+                    activeContribution.customCategoryLabel
+                  )}
+                  )
+                </div>
+              )}
               <div>
                 <strong>Statement Date:</strong>{' '}
                 {new Date().toLocaleDateString('en-GB', {

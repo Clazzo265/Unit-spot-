@@ -7,6 +7,7 @@ import {
   calculateOutstandingBalance,
 } from '../../utils/financialCalculations';
 import { getGroupPreset, getExpenseCategoryLabel } from '../../utils/groupPresets';
+import { formatDeadlineLabel } from '../../utils/financialConfig';
 import {
   CheckCircle2,
   Clock,
@@ -17,6 +18,7 @@ import {
   Plus,
   KeyRound,
   HelpCircle,
+  ExternalLink,
 } from 'lucide-react';
 
 export const MemberDashboardView: React.FC<{
@@ -128,7 +130,8 @@ export const MemberDashboardView: React.FC<{
     assignedAmt: number,
     verifiedAmt: number,
     pendingAmt: number,
-    deadline: string
+    deadline: string,
+    hasNoDeadline?: boolean
   ) => {
     const rem = Math.max(0, assignedAmt - verifiedAmt);
     if (rem === 0 && assignedAmt > 0) {
@@ -140,16 +143,23 @@ export const MemberDashboardView: React.FC<{
         cls: 'text-amber-700 dark:text-amber-400',
       };
     }
-    const deadlineMs = new Date(deadline).getTime();
-    const daysLeft = Math.ceil((deadlineMs - Date.now()) / (1000 * 60 * 60 * 24));
-    if (deadlineMs < Date.now() && rem > 0) {
-      return { text: strings.plain.overdueBadge, cls: 'text-rose-700 dark:text-rose-400' };
+    if (!hasNoDeadline && deadline && deadline.trim()) {
+      const deadlineMs = new Date(deadline).getTime();
+      if (!Number.isNaN(deadlineMs)) {
+        const daysLeft = Math.ceil((deadlineMs - Date.now()) / (1000 * 60 * 60 * 24));
+        if (deadlineMs < Date.now() && rem > 0) {
+          return { text: strings.plain.overdueBadge, cls: 'text-rose-700 dark:text-rose-400' };
+        }
+        if (verifiedAmt > 0) {
+          return { text: strings.plain.partialBadge, cls: 'text-amber-700 dark:text-amber-400' };
+        }
+        if (daysLeft <= 3) {
+          return { text: strings.plain.dueSoonBadge, cls: 'text-amber-700 dark:text-amber-400' };
+        }
+      }
     }
     if (verifiedAmt > 0) {
       return { text: strings.plain.partialBadge, cls: 'text-amber-700 dark:text-amber-400' };
-    }
-    if (daysLeft <= 3) {
-      return { text: strings.plain.dueSoonBadge, cls: 'text-amber-700 dark:text-amber-400' };
     }
     return { text: strings.plain.unpaidBadge, cls: 'text-slate-600 dark:text-slate-400' };
   };
@@ -288,7 +298,8 @@ export const MemberDashboardView: React.FC<{
                   a.assignedAmount,
                   verified,
                   pending,
-                  a.deadline
+                  a.deadline,
+                  contrib?.hasNoDeadline
                 );
 
                 return (
@@ -301,6 +312,11 @@ export const MemberDashboardView: React.FC<{
                         <span className="font-bold text-sm text-slate-900 dark:text-white">
                           {contrib?.title || 'Group Contribution'}
                         </span>
+                        {contrib && (
+                          <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                            · {getExpenseCategoryLabel(contrib.category, contrib.customCategoryLabel)}
+                          </span>
+                        )}
                         <span aria-hidden="true" className="text-slate-300 dark:text-slate-600">
                           ·
                         </span>
@@ -333,12 +349,24 @@ export const MemberDashboardView: React.FC<{
                         )}
                         <span aria-hidden="true">·</span>
                         <span>
-                          Due{' '}
-                          {new Date(a.deadline).toLocaleDateString('en-GB', {
-                            day: 'numeric',
-                            month: 'short',
-                          })}
+                          {contrib?.hasNoDeadline || !a.deadline
+                            ? 'No fixed deadline'
+                            : `Due ${formatDeadlineLabel(a.deadline, contrib?.hasNoDeadline)}`}
                         </span>
+                        {contrib?.supportingDocumentUrl && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <a
+                              href={contrib.supportingDocumentUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 font-semibold text-blue-600 dark:text-cyan-400 hover:underline"
+                            >
+                              <span>{contrib.supportingDocumentName || 'View Bill'}</span>
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          </>
+                        )}
                       </div>
                     </div>
 
@@ -443,7 +471,7 @@ export const MemberDashboardView: React.FC<{
                         {e.name}
                       </div>
                       <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                        {getExpenseCategoryLabel(e.category)}
+                        {getExpenseCategoryLabel(e.category, e.customCategoryLabel)}
                       </div>
                     </div>
                     <span className="font-bold font-mono text-slate-900 dark:text-white shrink-0">

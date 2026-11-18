@@ -19,10 +19,20 @@ service firebase.storage {
       return request.resource != null &&
              request.resource.size > 0 &&
              request.resource.size <= 5 * 1024 * 1024 &&
+             (
+               request.resource.contentType.matches('image/.*') ||
+               request.resource.contentType == 'application/pdf'
+             );
+    }
+
+    function isValidAvatarUpload() {
+      return request.resource != null &&
+             request.resource.size > 0 &&
+             request.resource.size <= 5 * 1024 * 1024 &&
              request.resource.contentType.matches('image/.*');
     }
 
-    // UID-scoped receipt images: /receipts/{groupId}/{userId}/{fileName}
+    // UID-scoped receipt images & PDFs: /receipts/{groupId}/{userId}/{fileName}
     // Readable only by the uploading user or the group's authorized admin/treasurer recorded in object metadata.
     match /receipts/{groupId}/{userId}/{fileName} {
       allow read: if isVerifiedUser() &&
@@ -52,6 +62,37 @@ service firebase.storage {
                       request.auth.uid == userId ||
                       (resource.metadata != null && resource.metadata.adminId == request.auth.uid)
                     );
+    }
+
+    // Contribution supporting documents (images or PDF up to 5MB)
+    match /supportingDocs/{groupId}/{userId}/{fileName} {
+      allow read: if isVerifiedUser() && isValidPathId(groupId) && isValidPathId(userId);
+      allow create, update: if isVerifiedUser() &&
+                            isValidPathId(groupId) &&
+                            isValidPathId(userId) &&
+                            request.auth.uid == userId &&
+                            fileName.size() > 0 && fileName.size() <= 160 &&
+                            isValidReceiptUpload() &&
+                            request.resource.metadata != null &&
+                            request.resource.metadata.groupId == groupId &&
+                            request.resource.metadata.uploaderUid == request.auth.uid;
+      allow delete: if isVerifiedUser() &&
+                    isValidPathId(groupId) &&
+                    isValidPathId(userId) &&
+                    request.auth.uid == userId;
+    }
+
+    // User profile avatars (images up to 5MB)
+    match /avatars/{userId}/{fileName} {
+      allow read: if isVerifiedUser() && isValidPathId(userId);
+      allow create, update: if isVerifiedUser() &&
+                            isValidPathId(userId) &&
+                            request.auth.uid == userId &&
+                            fileName.size() > 0 && fileName.size() <= 160 &&
+                            isValidAvatarUpload();
+      allow delete: if isVerifiedUser() &&
+                    isValidPathId(userId) &&
+                    request.auth.uid == userId;
     }
 
     // Legacy receipt paths denied for new writes; readable only if metadata explicitly authorizes the requester.

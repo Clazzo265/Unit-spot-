@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
 import { PaymentMethod } from '../../types';
@@ -15,22 +15,22 @@ import {
   generateIdempotencyKey,
   resolveMemberInfo,
   isValidStoveType,
-  isAccommodationGroup,
+  isStoveBillingApplicable,
 } from '../../utils/financialConfig';
 import { canVerifyPaymentsRole } from '../../utils/centralizedFinancialAdmin';
-import { uploadReceiptImage } from '../../firebase/config';
 import { Modal } from '../ui/Modal';
+import { FileUploadField, UploadedFileState } from '../ui/FileUploadField';
 import {
   CheckCircle,
   Clock,
   AlertCircle,
   AlertTriangle,
-  Camera,
   Upload,
-  Trash2,
-  Image as ImageIcon,
   ChevronDown,
   ChevronUp,
+  FileText,
+  ExternalLink,
+  Info,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -60,7 +60,6 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
   const { showToast } = useToast();
 
   const isVerifier = canVerifyPaymentsRole(effectiveRole);
-  const showStoveInfo = isAccommodationGroup(currentGroup);
 
   const groupAssignments = useMemo(() => {
     const scoped = currentGroup
@@ -83,11 +82,16 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
     defaultAssignmentId || groupAssignments[0]?.id || ''
   );
   const [amount, setAmount] = useState<string>('');
+  const [paymentDate, setPaymentDate] = useState<string>(
+    () => new Date().toISOString().split('T')[0]
+  );
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('tnm_mpamba');
   const [transactionReference, setTransactionReference] = useState<string>('');
-  const [receiptImage, setReceiptImage] = useState<string | null>(null);
-  const [receiptImageName, setReceiptImageName] = useState<string>('');
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [receiptFile, setReceiptFile] = useState<UploadedFileState | null>(null);
+  const [receiptUploadStatus, setReceiptUploadStatus] = useState<
+    'idle' | 'uploading' | 'uploaded' | 'error'
+  >('idle');
+  const [verifyImmediately, setVerifyImmediately] = useState<boolean>(false);
   const [showNotes, setShowNotes] = useState<boolean>(false);
   const [receiptNote, setReceiptNote] = useState<string>('');
   const [confirmOverpayment, setConfirmOverpayment] = useState<boolean>(false);
@@ -99,20 +103,20 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
     amount: number;
     outstanding: number;
     overpaid: number;
-    image?: string;
+    fileUrl?: string;
+    fileName?: string;
+    fileType?: string;
     isPending: boolean;
   } | null>(null);
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (isOpen) {
       setIdempotencyKey(generateIdempotencyKey());
       setConfirmOverpayment(false);
+      setVerifyImmediately(false);
       setIsSubmitting(false);
-      setUploadProgress(null);
       setError('');
+      setPaymentDate(new Date().toISOString().split('T')[0]);
       if (defaultAssignmentId) {
         setSelectedAssignmentId(defaultAssignmentId);
       } else if (
@@ -127,6 +131,13 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
   const currentAssignment = groupAssignments.find((a) => a.id === selectedAssignmentId);
   const memberInfo = resolveMemberInfo(currentAssignment?.memberId, groupMembers, users);
   const contribution = contributions.find((c) => c.id === currentAssignment?.contributionId);
+
+  const showStoveInfo = Boolean(
+    contribution &&
+      isStoveBillingApplicable(currentGroup, contribution.category) &&
+      (contribution.allocationMode === 'stove_rate' ||
+        Boolean(currentAssignment?.stoveTypeAtAssignment))
+  );
 
   const verifiedPaid = currentAssignment
     ? calculateVerifiedPaidForAssignment(currentAssignment.id, payments)
@@ -153,62 +164,23 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
     setError('');
   };
 
-  const handleProcessImage = (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      setError('Please select an image file (PNG, JPG, WEBP).');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 1200;
-        const MAX_HEIGHT = 1200;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
-            width = MAX_WIDTH;
-          }
-        } else {
-          if (height > MAX_HEIGHT) {
-            width *= MAX_HEIGHT / height;
-            height = MAX_HEIGHT;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
-          setReceiptImage(dataUrl);
-          setReceiptImageName(file.name || 'receipt_capture.jpg');
-          setError('');
-        }
-      };
-      img.src = e.target?.result as string;
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) handleProcessImage(file);
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmitting) return;
     setError('');
 
+    if (receiptUploadStatus === 'uploading') {
+      setError('Please wait for your receipt upload to finish before saving.');
+      return;
+    }
+
     if (!currentAssignment) {
       setError('Please select a valid contribution balance.');
+      return;
+    }
+
+    if (!paymentDate.trim()) {
+      setError('Please select the payment date.');
       return;
     }
 
@@ -221,7 +193,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
     const refCheck = validateTransactionReference(
       paymentMethod,
       transactionReference,
-      Boolean(receiptImage)
+      Boolean(receiptFile?.url)
     );
     if (!refCheck.valid) {
       setError(refCheck.error || 'Please check the transaction reference.');
@@ -234,61 +206,47 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
     }
 
     setIsSubmitting(true);
-    let finalReceiptUrl: string | undefined = receiptImage || undefined;
-    let finalStoragePath: string | undefined;
-
-    if (receiptImage) {
-      setUploadProgress(15);
-      const uploaded = await uploadReceiptImage(
-        currentGroup?.id || 'default',
-        idempotencyKey,
-        receiptImage,
-        (pct) => setUploadProgress(pct),
-        {
-          uploaderUid: currentUser?.id,
-          adminId: currentGroup?.adminId,
-          treasurerId: currentGroup?.treasurerId,
-        }
-      );
-      finalReceiptUrl = uploaded.url;
-      finalStoragePath = uploaded.storagePath;
-    }
+    const shouldVerifyImmediately = isVerifier && verifyImmediately;
 
     const result = recordPayment({
       assignmentId: selectedAssignmentId,
       amount: parsedAmount.value,
+      paymentDate: `${paymentDate}T12:00:00Z`,
       paymentMethod,
       transactionReference: transactionReference.trim() || undefined,
       idempotencyKey,
-      receiptImageUrl: finalReceiptUrl,
-      receiptStoragePath: finalStoragePath,
-      receiptNote: receiptNote.trim() || (receiptImage ? 'Picture proof attached' : undefined),
+      receiptImageUrl: receiptFile?.url,
+      receiptStoragePath: receiptFile?.storagePath,
+      receiptFileName: receiptFile?.fileName,
+      receiptFileType: receiptFile?.fileType,
+      receiptFileSize: receiptFile?.fileSize,
+      receiptNote: receiptNote.trim() || (receiptFile ? 'Receipt file attached' : undefined),
+      verifyImmediately: shouldVerifyImmediately,
     });
 
     setIsSubmitting(false);
-    setUploadProgress(null);
 
     if (!result.success) {
       setError(result.error || 'Could not save payment. Please check details.');
       return;
     }
 
-    const isPending =
-      result.verificationStatus === 'pending_verification' ||
-      result.verificationStatus === 'submitted';
+    const isPending = result.verificationStatus !== 'verified';
 
     setSuccessInfo({
       paymentId: result.paymentId,
       amount: parsedAmount.value,
       outstanding: result.newOutstanding,
       overpaid: result.overpaid || 0,
-      image: finalReceiptUrl || receiptImage || undefined,
+      fileUrl: receiptFile?.previewUrl || receiptFile?.url,
+      fileName: receiptFile?.fileName,
+      fileType: receiptFile?.fileType,
       isPending,
     });
 
     if (isPending) {
-      showToast('Proof Submitted — Waiting Check', {
-        message: `${formatMWK(parsedAmount.value)} sent to the group admin/treasurer for verification.`,
+      showToast('Saved — Waiting Verification', {
+        message: `${formatMWK(parsedAmount.value)} logged as pending verification until confirmed by a verifier.`,
         variant: 'info',
       });
     } else {
@@ -314,10 +272,11 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
   const resetAndClose = () => {
     setSuccessInfo(null);
     setAmount('');
+    setPaymentDate(new Date().toISOString().split('T')[0]);
     setTransactionReference('');
-    setReceiptImage(null);
-    setReceiptImageName('');
-    setUploadProgress(null);
+    setReceiptFile(null);
+    setReceiptUploadStatus('idle');
+    setVerifyImmediately(false);
     setShowNotes(false);
     setReceiptNote('');
     setConfirmOverpayment(false);
@@ -332,6 +291,10 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
       ? RATES[memberInfo.stoveType]
       : currentAssignment?.applicableRate;
 
+  const isSuccessPdf =
+    successInfo?.fileType === 'application/pdf' ||
+    Boolean(successInfo?.fileName?.toLowerCase().endsWith('.pdf'));
+
   return (
     <Modal
       isOpen={isOpen}
@@ -339,7 +302,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
       title={isVerifier ? 'Record Payment' : 'Submit Payment Proof'}
       subtitle={
         isVerifier
-          ? 'Verified ledger entry in Malawi Kwacha (MWK)'
+          ? 'Log member payment in Malawi Kwacha (MWK)'
           : 'Send your mobile money, bank, or cash proof for admin check'
       }
       maxWidthClass="max-w-lg"
@@ -362,7 +325,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
           <div>
             <h4 className="text-xl font-bold text-slate-900 dark:text-white">
               {successInfo.isPending
-                ? 'Proof Submitted — Waiting Admin Check'
+                ? 'Payment Submitted — Pending Verification'
                 : 'Payment Recorded & Verified'}
             </h4>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
@@ -372,7 +335,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                   <span className="font-mono font-semibold text-slate-900 dark:text-white">
                     {successInfo.paymentId}
                   </span>{' '}
-                  was sent. Your balance updates once checked by the group admin or treasurer.
+                  is saved as pending verification. Member balances update once verified.
                 </>
               ) : (
                 <>
@@ -380,20 +343,35 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                   <span className="font-mono font-semibold text-slate-900 dark:text-white">
                     {successInfo.paymentId}
                   </span>{' '}
-                  has been verified and added to the ledger.
+                  has been verified and applied to the ledger.
                 </>
               )}
             </p>
           </div>
 
           <div className="bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 text-left max-w-sm mx-auto space-y-2 tabular-nums">
-            {successInfo.image && (
+            {successInfo.fileUrl && (
               <div className="mb-3 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-black/5">
-                <img
-                  src={successInfo.image}
-                  alt="Payment Receipt"
-                  className="w-full h-32 object-cover"
-                />
+                {isSuccessPdf ? (
+                  <a
+                    href={successInfo.fileUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-between p-3 bg-white dark:bg-[#0D1424] text-xs font-semibold text-blue-600 dark:text-cyan-400 hover:underline"
+                  >
+                    <span className="inline-flex items-center gap-2 truncate">
+                      <FileText className="w-4 h-4 shrink-0" />
+                      <span className="truncate">{successInfo.fileName || 'Receipt.pdf'}</span>
+                    </span>
+                    <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                  </a>
+                ) : (
+                  <img
+                    src={successInfo.fileUrl}
+                    alt="Payment Receipt"
+                    className="w-full h-32 object-cover"
+                  />
+                )}
                 <div className="px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 flex items-center justify-between border-t border-emerald-100 dark:border-emerald-900">
                   <span>Receipt Attached</span>
                   <span className="font-mono">{successInfo.paymentId}</span>
@@ -539,16 +517,10 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                     </span>
                   )}
                 </div>
-                {showStoveInfo && (
-                  memberInfo && isValidStoveType(memberInfo.stoveType) ? (
-                    <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
-                      {STOVE_TYPE_LABELS[memberInfo.stoveType]} ({formatMWK(applicableStoveRate || 0)})
-                    </span>
-                  ) : (
-                    <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-400">
-                      Stove Tier Optional
-                    </span>
-                  )
+                {showStoveInfo && memberInfo && isValidStoveType(memberInfo.stoveType) && (
+                  <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                    {STOVE_TYPE_LABELS[memberInfo.stoveType]} ({formatMWK(applicableStoveRate || 0)})
+                  </span>
                 )}
               </div>
 
@@ -601,7 +573,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                 <button
                   type="button"
                   onClick={() => handleAmountChange(String(currentOutstanding))}
-                  className="min-h-[40px] text-xs py-1.5 px-2 bg-slate-100 dark:bg-[#131D33] hover:bg-slate-200 dark:hover:bg-[#1A2744] text-slate-800 dark:text-slate-200 font-semibold rounded-xl border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer whitespace-nowrap"
+                  className="min-h-[42px] text-xs py-1.5 px-2 bg-slate-100 dark:bg-[#131D33] hover:bg-slate-200 dark:hover:bg-[#1A2744] text-slate-800 dark:text-slate-200 font-semibold rounded-xl border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer whitespace-nowrap"
                 >
                   Full ({formatMWK(currentOutstanding)})
                 </button>
@@ -611,7 +583,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                     onClick={() =>
                       handleAmountChange(String(Math.floor(currentOutstanding / 2)))
                     }
-                    className="min-h-[40px] text-xs py-1.5 px-2 bg-slate-100 dark:bg-[#131D33] hover:bg-slate-200 dark:hover:bg-[#1A2744] text-slate-800 dark:text-slate-200 font-semibold rounded-xl border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer whitespace-nowrap"
+                    className="min-h-[42px] text-xs py-1.5 px-2 bg-slate-100 dark:bg-[#131D33] hover:bg-slate-200 dark:hover:bg-[#1A2744] text-slate-800 dark:text-slate-200 font-semibold rounded-xl border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer whitespace-nowrap"
                   >
                     50% ({formatMWK(Math.floor(currentOutstanding / 2))})
                   </button>
@@ -619,7 +591,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                 <button
                   type="button"
                   onClick={() => handleAmountChange('5000')}
-                  className="min-h-[40px] text-xs py-1.5 px-2 bg-slate-100 dark:bg-[#131D33] hover:bg-slate-200 dark:hover:bg-[#1A2744] text-slate-800 dark:text-slate-200 font-semibold rounded-xl border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer whitespace-nowrap"
+                  className="min-h-[42px] text-xs py-1.5 px-2 bg-slate-100 dark:bg-[#131D33] hover:bg-slate-200 dark:hover:bg-[#1A2744] text-slate-800 dark:text-slate-200 font-semibold rounded-xl border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer whitespace-nowrap"
                 >
                   MK 5,000
                 </button>
@@ -627,23 +599,39 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
             </div>
           )}
 
-          {/* Amount Input (Strict Integer MWK) */}
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
-              {isVerifier ? 'Amount Received (Whole MWK) *' : 'Amount Paid (Whole MWK) *'}
-            </label>
-            <div className="relative">
-              <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-bold text-slate-400 text-sm">
-                MK
-              </span>
+          {/* Amount & Payment Date */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
+                {isVerifier ? 'Amount Received (MWK) *' : 'Amount Paid (MWK) *'}
+              </label>
+              <div className="relative">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-bold text-slate-400 text-sm">
+                  MK
+                </span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  placeholder="e.g. 10000"
+                  value={amount}
+                  onChange={(e) => handleAmountChange(e.target.value)}
+                  className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl pl-12 pr-4 py-2 text-base font-bold font-mono text-slate-900 dark:text-white tabular-nums focus:outline-none"
+                  required
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
+                Payment Date *
+              </label>
               <input
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                placeholder="e.g. 10000"
-                value={amount}
-                onChange={(e) => handleAmountChange(e.target.value)}
-                className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl pl-12 pr-4 py-2.5 text-base font-bold font-mono text-slate-900 dark:text-white tabular-nums focus:outline-none"
+                type="date"
+                value={paymentDate}
+                max={new Date().toISOString().split('T')[0]}
+                onChange={(e) => setPaymentDate(e.target.value)}
+                className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-sm text-slate-900 dark:text-white focus:outline-none"
                 required
               />
             </div>
@@ -688,10 +676,10 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
             </label>
             <div className="grid grid-cols-2 gap-2 text-xs">
               {[
-                { id: 'tnm_mpamba', label: 'TNM Mpamba', tag: 'Mobile Money' },
-                { id: 'airtel_money', label: 'Airtel Money', tag: 'Mobile Money' },
-                { id: 'bank_transfer', label: 'Bank Transfer', tag: 'Malawian Commercial Banks' },
-                { id: 'cash', label: 'Physical Cash', tag: 'In-person Receipt' },
+                { id: 'tnm_mpamba', label: 'TNM Mpamba', tag: 'Mobile Money Ref / Receipt' },
+                { id: 'airtel_money', label: 'Airtel Money', tag: 'Mobile Money Ref / Receipt' },
+                { id: 'bank_transfer', label: 'Bank Transfer', tag: 'Bank Ref / Receipt' },
+                { id: 'cash', label: 'Cash', tag: 'No receipt photo required' },
               ].map((m) => (
                 <label
                   key={m.id}
@@ -722,116 +710,57 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                 </label>
               ))}
             </div>
-          </div>
 
-          {/* Hidden file and camera inputs */}
-          <input
-            ref={cameraInputRef}
-            type="file"
-            accept="image/*"
-            capture="environment"
-            onChange={handleFileChange}
-            className="hidden"
-          />
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            onChange={handleFileChange}
-            className="hidden"
-          />
-
-          {/* 1-Tap Receipt Capture */}
-          <div className="space-y-2">
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300">
-              Transaction Receipt Photo / Screenshot
-            </label>
-
-            {receiptImage ? (
-              <div className="p-3 bg-slate-50 dark:bg-[#11192C] rounded-2xl border border-slate-200 dark:border-slate-800 space-y-2.5">
-                <div className="relative rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 max-h-44 bg-slate-950 flex items-center justify-center">
-                  <img
-                    src={receiptImage}
-                    alt="Receipt preview"
-                    className="w-full h-44 object-contain"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setReceiptImage(null);
-                      setReceiptImageName('');
-                    }}
-                    className="min-h-[36px] min-w-[36px] absolute top-2 right-2 p-1.5 bg-black/75 hover:bg-black text-white rounded-lg transition-colors cursor-pointer flex items-center justify-center"
-                    aria-label="Remove photo"
-                  >
-                    <Trash2 className="w-4 h-4 text-rose-400" />
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300">
-                  <div className="flex items-center gap-1.5 truncate max-w-[200px]">
-                    <ImageIcon className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                    <span className="truncate font-medium">{receiptImageName}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="min-h-[36px] text-xs font-semibold text-blue-600 dark:text-cyan-400 hover:underline cursor-pointer"
-                  >
-                    Replace Receipt
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => cameraInputRef.current?.click()}
-                  className="min-h-[48px] py-2.5 px-3 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 hover:border-blue-500 dark:hover:border-cyan-400 bg-slate-50 dark:bg-[#11192C] hover:bg-slate-100 dark:hover:bg-[#18233D] text-xs font-semibold text-slate-800 dark:text-slate-200 flex items-center justify-center gap-2 cursor-pointer transition-colors"
-                >
-                  <Camera className="w-4 h-4 text-blue-600 dark:text-cyan-400 shrink-0" />
-                  <span>Take Photo</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="min-h-[48px] py-2.5 px-3 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 hover:border-blue-500 dark:hover:border-cyan-400 bg-slate-50 dark:bg-[#11192C] hover:bg-slate-100 dark:hover:bg-[#18233D] text-xs font-semibold text-slate-800 dark:text-slate-200 flex items-center justify-center gap-2 cursor-pointer transition-colors"
-                >
-                  <Upload className="w-4 h-4 text-blue-600 dark:text-cyan-400 shrink-0" />
-                  <span>Upload Screenshot</span>
-                </button>
-              </div>
-            )}
-
-            {uploadProgress !== null && (
-              <div className="space-y-1 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-                <div className="flex justify-between">
-                  <span>Uploading receipt image...</span>
-                  <span>{uploadProgress}%</span>
-                </div>
-                <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-600 transition-all"
-                    style={{ width: `${uploadProgress}%` }}
-                  />
-                </div>
-              </div>
+            {paymentMethod !== 'cash' && (
+              <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400 flex items-start gap-1.5 leading-snug">
+                <Info className="w-3.5 h-3.5 text-blue-600 dark:text-cyan-400 shrink-0 mt-0.5" />
+                <span>
+                  UnitSpot records your transaction reference or receipt screenshot for group verification — it does not automatically debit mobile money or bank accounts.
+                </span>
+              </p>
             )}
           </div>
+
+          {/* Receipt File / Photo Upload */}
+          <FileUploadField
+            label={
+              paymentMethod === 'cash'
+                ? 'Receipt Photo / PDF (Optional for Cash)'
+                : 'Transaction Receipt Photo / PDF'
+            }
+            helperText={
+              paymentMethod === 'cash'
+                ? 'No receipt photo is required for cash payments.'
+                : 'Provide either a receipt photo/PDF below or enter the SMS/bank reference number.'
+            }
+            folder="receipts"
+            groupId={currentGroup?.id || 'default'}
+            recordIdPrefix="pay"
+            scopeMeta={{
+              uploaderUid: currentUser?.id,
+              adminId: currentGroup?.adminId,
+              treasurerId: currentGroup?.treasurerId,
+            }}
+            allowPdf
+            allowCamera
+            value={receiptFile}
+            onChange={setReceiptFile}
+            onStatusChange={setReceiptUploadStatus}
+          />
 
           {/* Transaction Reference */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300">
                 {paymentMethod === 'cash'
-                  ? 'Receipt / Cash Slip Number'
+                  ? 'Receipt / Cash Slip Number (Optional)'
                   : paymentMethod === 'bank_transfer'
                     ? 'Bank Reference Number'
                     : 'Mobile Money SMS Reference'}
               </label>
-              {receiptImage && (
+              {(paymentMethod === 'cash' || receiptFile) && (
                 <span className="text-[11px] text-emerald-700 dark:text-emerald-400 font-semibold">
-                  Optional with photo
+                  {paymentMethod === 'cash' ? 'Optional for cash' : 'Optional with attachment'}
                 </span>
               )}
             </div>
@@ -839,7 +768,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
               type="text"
               placeholder={
                 paymentMethod === 'cash'
-                  ? 'e.g. SLIP-104 or Cash Receipt #12'
+                  ? 'Leave blank to auto-assign, or enter slip #'
                   : paymentMethod === 'bank_transfer'
                     ? 'e.g. NBM-8829104 or FDH-22910'
                     : 'e.g. MP847219 or CI260512.1402'
@@ -849,6 +778,26 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
               className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm font-mono text-slate-900 dark:text-white focus:outline-none"
             />
           </div>
+
+          {/* Explicit Verifier Opt-in (No silent auto-verification) */}
+          {isVerifier && (
+            <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#11192C] space-y-1">
+              <label className="flex items-start gap-2.5 cursor-pointer text-xs font-semibold text-slate-900 dark:text-white min-h-[36px]">
+                <input
+                  type="checkbox"
+                  checked={verifyImmediately}
+                  onChange={(e) => setVerifyImmediately(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-300 text-emerald-600"
+                />
+                <span>Mark as verified immediately (I have confirmed receipt of funds)</span>
+              </label>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 pl-6">
+                {verifyImmediately
+                  ? 'Member balance will decrease immediately upon saving.'
+                  : 'Leave unchecked to save as Pending Verification until funds or SMS confirmation are checked.'}
+              </p>
+            </div>
+          )}
 
           {/* Collapsible Optional Notes */}
           <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
@@ -887,22 +836,24 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || receiptUploadStatus === 'uploading'}
               className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 text-white px-5 py-2.5 text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
-              {isVerifier ? (
+              {isVerifier && verifyImmediately ? (
                 <CheckCircle className="w-4 h-4 text-emerald-400 dark:text-white" />
               ) : (
                 <Upload className="w-4 h-4 text-[#E5B93C] dark:text-white" />
               )}
               <span>
-                {isSubmitting
-                  ? uploadProgress !== null
-                    ? `Uploading ${uploadProgress}%...`
-                    : 'Saving...'
-                  : isVerifier
-                    ? 'Confirm & Record Payment'
-                    : 'Submit Proof for Check'}
+                {receiptUploadStatus === 'uploading'
+                  ? 'Uploading Receipt...'
+                  : isSubmitting
+                    ? 'Saving...'
+                    : isVerifier && verifyImmediately
+                      ? 'Confirm & Verify Payment'
+                      : isVerifier
+                        ? 'Save as Pending Check'
+                        : 'Submit Proof for Check'}
               </span>
             </button>
           </div>
