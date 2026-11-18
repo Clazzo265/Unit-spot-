@@ -14,6 +14,10 @@ import {
   allocateByPercentage,
   validateCustomAllocations,
   formatDeadlineLabel,
+  DEFAULT_INVITE_EXPIRY_DAYS,
+  createInviteExpiry,
+  isInviteExpired,
+  generateJoinCode,
 } from './financialConfig';
 import { GROUP_PRESETS } from './groupPresets';
 import {
@@ -30,6 +34,7 @@ import {
   canUserVerifyPayments,
   canUserReversePayments,
   canUserApproveExpenses,
+  getEffectiveGroupRole,
 } from './centralizedFinancialAdmin';
 import {
   Contribution,
@@ -389,8 +394,8 @@ describe('Authoritative Financial Config, Integrity Repair, Reversals & RBAC', (
     assert.equal(byUserId?.stoveType, 'non_electric');
     assert.equal(resolveMemberInfo('non_existent', gm, []), null);
 
-    // RBAC checks
-    assert.equal(canUserManageGroup('super_admin'), true);
+    // RBAC checks (no super_admin bypasses)
+    assert.equal(canUserManageGroup('super_admin'), false);
     assert.equal(canUserManageGroup('group_admin'), true);
     assert.equal(canUserManageGroup('treasurer'), false);
     assert.equal(canUserManageGroup('member'), false);
@@ -398,12 +403,15 @@ describe('Authoritative Financial Config, Integrity Repair, Reversals & RBAC', (
     assert.equal(canUserVerifyPayments('treasurer'), true);
     assert.equal(canUserVerifyPayments('member'), false);
 
-    assert.equal(canUserReversePayments('super_admin'), true);
+    assert.equal(canUserReversePayments('super_admin'), false);
     assert.equal(canUserReversePayments('group_admin'), true);
     assert.equal(canUserReversePayments('treasurer'), false);
 
     assert.equal(canUserApproveExpenses('group_admin'), true);
     assert.equal(canUserApproveExpenses('treasurer'), false);
+
+    assert.equal(getEffectiveGroupRole(null, null, gm), 'member');
+    assert.equal(getEffectiveGroupRole({ id: 'uid_x', email: 'x@test.mw', role: 'super_admin' }, null, gm), 'member');
   });
 
   test('8. Legacy GroupMember normalization & Firestore payload sanitization preserve required schema fields', async () => {
@@ -553,6 +561,23 @@ describe('Authoritative Financial Config, Integrity Repair, Reversals & RBAC', (
     // Verify no group preset uses 'equal' as a default allocation mode
     const presetModes = Object.values(GROUP_PRESETS).map((p) => p.defaultAllocationMode);
     assert.equal(presetModes.includes('equal' as unknown as 'custom'), false);
+  });
+
+  test('11. High-entropy US-XXXXX-XXXXX invite generation and 30-day invite expiry helpers', () => {
+    const code1 = generateJoinCode('US');
+    const code2 = generateJoinCode('US');
+    assert.match(code1, /^US-[A-HJ-NP-Z2-9]{5}-[A-HJ-NP-Z2-9]{5}$/);
+    assert.match(code2, /^US-[A-HJ-NP-Z2-9]{5}-[A-HJ-NP-Z2-9]{5}$/);
+    assert.notEqual(code1, code2);
+
+    const fixedNow = Date.UTC(2026, 3, 1, 12, 0, 0);
+    const expiry = createInviteExpiry(DEFAULT_INVITE_EXPIRY_DAYS, fixedNow);
+    assert.equal(expiry.expiresAtMs, fixedNow + 30 * 86_400_000);
+    assert.equal(isInviteExpired(expiry.expiresAt, expiry.expiresAtMs, fixedNow + 1000), false);
+    assert.equal(isInviteExpired(expiry.expiresAt, expiry.expiresAtMs, expiry.expiresAtMs), true);
+    assert.equal(isInviteExpired(expiry.expiresAt, expiry.expiresAtMs, expiry.expiresAtMs + 60_000), true);
+    // Legacy invites without expiry fields never break retroactively
+    assert.equal(isInviteExpired(undefined, undefined, fixedNow), false);
   });
 });
 

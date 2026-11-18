@@ -399,11 +399,50 @@ export function formatDeadlineLabel(deadline?: string | null, hasNoDeadline?: bo
   return dt.toLocaleDateString();
 }
 
+export const DEFAULT_INVITE_EXPIRY_DAYS = 30;
+
+export function createInviteExpiry(
+  days: number = DEFAULT_INVITE_EXPIRY_DAYS,
+  nowMs: number = Date.now()
+): { expiresAt: string; expiresAtMs: number } {
+  const safeDays = Number.isFinite(days) && days > 0 ? days : DEFAULT_INVITE_EXPIRY_DAYS;
+  const expiresAtMs = nowMs + Math.round(safeDays * 86_400_000);
+  return {
+    expiresAt: new Date(expiresAtMs).toISOString(),
+    expiresAtMs,
+  };
+}
+
+export function isInviteExpired(
+  expiresAt?: string | null,
+  expiresAtMs?: number | null,
+  nowMs: number = Date.now()
+): boolean {
+  if (typeof expiresAtMs === 'number' && Number.isFinite(expiresAtMs)) {
+    return nowMs >= expiresAtMs;
+  }
+  if (expiresAt && expiresAt.trim()) {
+    const parsed = Date.parse(expiresAt);
+    if (Number.isFinite(parsed)) {
+      return nowMs >= parsed;
+    }
+  }
+  return false;
+}
+
 export function generateJoinCode(prefix: string = 'US'): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  const part1 = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-  const part2 = Array.from({ length: 2 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-  return `${prefix}-${part1}-${part2}`;
+  const length = 10;
+  const bytes = new Uint8Array(length);
+  if (typeof globalThis !== 'undefined' && globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  const token = Array.from(bytes, (b) => chars[b % chars.length]).join('');
+  return `${prefix}-${token.slice(0, 5)}-${token.slice(5, 10)}`;
 }
 
 export function buildInviteUrl(joinCode: string, origin?: string): string {
@@ -424,7 +463,7 @@ export function extractInviteCodeFromUrl(hrefOrSearch: string): string | null {
       const searchPart = idx >= 0 ? cleanInput.slice(idx) : `?${cleanInput}`;
       const params = new URLSearchParams(searchPart.split('#')[0]);
       const code = params.get('join')?.trim().toUpperCase();
-      if (code && /^[A-Z0-9-]{4,24}$/.test(code)) return code;
+      if (code && /^[A-Z0-9-]{4,32}$/.test(code)) return code;
     }
 
     if (cleanInput.includes('code=')) {
@@ -432,7 +471,7 @@ export function extractInviteCodeFromUrl(hrefOrSearch: string): string | null {
       const hashPart = hashIdx >= 0 ? cleanInput.slice(hashIdx + 1) : cleanInput;
       const params = new URLSearchParams(hashPart);
       const code = params.get('code')?.trim().toUpperCase();
-      if (code && /^[A-Z0-9-]{4,24}$/.test(code)) return code;
+      if (code && /^[A-Z0-9-]{4,32}$/.test(code)) return code;
     }
   } catch {
     return null;

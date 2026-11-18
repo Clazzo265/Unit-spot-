@@ -6,6 +6,7 @@ import {
   canVerifyPaymentsRole,
   resolveMemberForUser,
   getMemberFinancialSummary,
+  validateLeaveGroupEligibility,
 } from './centralizedFinancialAdmin';
 import {
   auditAndRepairFinancialData,
@@ -211,5 +212,104 @@ describe('UNIT SPOT Multi-Group, Member Role, Invite & Non-Accommodation Workflo
     const ny = getLocaleStrings('ny');
     assert.ok(en.landing.heroHeadline.includes('No confusion'));
     assert.ok(ny.landing.heroHeadline.includes('Palibe chisokonezo'));
+  });
+
+  test('7. Leave-group eligibility enforces sole-admin handover, archive fallback, and joined successor UID', () => {
+    const baseGroup: Group = {
+      id: 'grp_leave',
+      name: 'Area 25 House',
+      description: 'Shared bills',
+      category: 'house',
+      adminId: 'uid_admin',
+      treasurerId: 'uid_treasurer',
+      memberUids: ['uid_admin', 'uid_treasurer'],
+      defaultCurrency: 'MWK',
+      paymentRules: '',
+      joinCode: 'US-ABCDE-FGHIJ',
+      createdAt: '2026-01-01',
+      memberCount: 3,
+    };
+
+    const unjoinedPreAdded: GroupMember = {
+      id: 'mem_pre',
+      userId: 'mem_pre',
+      groupId: 'grp_leave',
+      name: 'Pre-added Unjoined',
+      email: 'pre@example.com',
+      roleInGroup: 'member',
+      joinedAt: '2026-01-01',
+      status: 'active',
+    };
+
+    const joinedMember: GroupMember = {
+      id: 'uid_treasurer',
+      userId: 'uid_treasurer',
+      linkedUserId: 'uid_treasurer',
+      groupId: 'grp_leave',
+      name: 'Chisomo Treasurer',
+      email: 'treasurer@example.com',
+      roleInGroup: 'treasurer',
+      joinedAt: '2026-01-01',
+      status: 'active',
+    };
+
+    const adminRecord: GroupMember = {
+      id: 'uid_admin',
+      userId: 'uid_admin',
+      linkedUserId: 'uid_admin',
+      groupId: 'grp_leave',
+      name: 'Main Admin',
+      email: 'admin@example.com',
+      roleInGroup: 'admin',
+      joinedAt: '2026-01-01',
+      status: 'active',
+    };
+
+    // Sole admin with zero other members must archive rather than abandon
+    const soleMemberAttempt = validateLeaveGroupEligibility({
+      userId: 'uid_admin',
+      group: baseGroup,
+      groupMembers: [adminRecord],
+    });
+    assert.equal(soleMemberAttempt.allowed, false);
+    assert.equal(soleMemberAttempt.requiresTransfer, true);
+    assert.match(soleMemberAttempt.error || '', /Archive/i);
+
+    // Sole admin without selected successor is blocked
+    const noSuccessorAttempt = validateLeaveGroupEligibility({
+      userId: 'uid_admin',
+      group: baseGroup,
+      groupMembers: [adminRecord, joinedMember],
+    });
+    assert.equal(noSuccessorAttempt.allowed, false);
+    assert.equal(noSuccessorAttempt.requiresTransfer, true);
+
+    // Cannot transfer admin ownership to a pre-added member with synthetic mem_ ID (no real Auth UID)
+    const unjoinedSuccessorAttempt = validateLeaveGroupEligibility({
+      userId: 'uid_admin',
+      group: baseGroup,
+      groupMembers: [adminRecord, unjoinedPreAdded, joinedMember],
+      transferToMemberId: 'mem_pre',
+    });
+    assert.equal(unjoinedSuccessorAttempt.allowed, false);
+    assert.match(unjoinedSuccessorAttempt.error || '', /not signed in/i);
+
+    // Selecting an active joined member succeeds and returns nextAdminMember
+    const validHandover = validateLeaveGroupEligibility({
+      userId: 'uid_admin',
+      group: baseGroup,
+      groupMembers: [adminRecord, unjoinedPreAdded, joinedMember],
+      transferToMemberId: 'uid_treasurer',
+    });
+    assert.equal(validHandover.allowed, true);
+    assert.equal(validHandover.nextAdminMember?.id, 'uid_treasurer');
+
+    // Ordinary / treasurer member can leave freely without transfer
+    const regularLeave = validateLeaveGroupEligibility({
+      userId: 'uid_treasurer',
+      group: baseGroup,
+      groupMembers: [adminRecord, joinedMember],
+    });
+    assert.equal(regularLeave.allowed, true);
   });
 });

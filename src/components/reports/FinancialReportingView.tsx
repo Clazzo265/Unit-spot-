@@ -16,7 +16,7 @@ import {
   isStoveBillingApplicable,
 } from '../../utils/financialConfig';
 import { getExpenseCategoryLabel, getGroupPreset } from '../../utils/groupPresets';
-import { Download, Printer, Building2 } from 'lucide-react';
+import { Download, Printer, Building2, ShieldCheck } from 'lucide-react';
 
 export const FinancialReportingView: React.FC = () => {
   const {
@@ -63,6 +63,22 @@ export const FinancialReportingView: React.FC = () => {
     groupPayments,
     totalApprovedExpenses
   );
+
+  const relatedAssignmentIds = new Set(relatedAssignments.map((a) => a.id));
+  const scopedPayments = groupPayments.filter(
+    (p) => !activeContribution || relatedAssignmentIds.has(p.assignmentId)
+  );
+  const pendingProofs = scopedPayments.filter(
+    (p) => p.verificationStatus === 'pending_verification' || p.verificationStatus === 'submitted'
+  );
+  const pendingProofsTotal = pendingProofs.reduce((sum, p) => sum + p.amountReceived, 0);
+  const reversedPayments = scopedPayments.filter((p) => p.verificationStatus === 'reversed');
+  const reversalsTotal = reversedPayments.reduce((sum, p) => sum + p.amountReceived, 0);
+
+  const authorisingAdmin =
+    resolveMemberInfo(currentGroup.adminId, groupMembers, users) ||
+    users.find((u) => u.id === currentGroup.adminId);
+  const authorisationLabel = `Verified & Authorised · ${authorisingAdmin?.name || 'Group Administrator'}`;
 
   const showStoveColumn = Boolean(
     activeContribution
@@ -117,7 +133,21 @@ export const FinancialReportingView: React.FC = () => {
       ].join(',');
     });
 
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows].join('\n');
+    const statementRows = [
+      `"# UNIT SPOT Official Financial Statement — ${currentGroup.name.replace(/"/g, '""')}"`,
+      `"# Statement Date","${new Date().toISOString().split('T')[0]}","Currency","${currentGroup.defaultCurrency}"`,
+      `"# Opening Balance (Ledger Inception)","0"`,
+      `"# Verified Contributions Received","${summary.totalVerified}"`,
+      `"# Pending Verification Proofs (${pendingProofs.length})","${pendingProofsTotal}"`,
+      `"# Approved Expenses Paid","${totalApprovedExpenses}"`,
+      `"# Reversals / Adjustments (${reversedPayments.length})","${reversalsTotal}"`,
+      `"# Closing Net Treasury Balance","${summary.remainingGroupFunds}"`,
+      `"# Authorisation Status","${authorisationLabel.replace(/"/g, '""')}"`,
+      '',
+    ];
+
+    const csvContent =
+      'data:text/csv;charset=utf-8,' + [...statementRows, headers.join(','), ...rows].join('\n');
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
@@ -273,6 +303,75 @@ export const FinancialReportingView: React.FC = () => {
             </span>
             <div className="text-base sm:text-lg font-bold text-slate-900 dark:text-slate-50 print:text-black mt-0.5">
               {formatSignedMWK(summary.remainingGroupFunds)}
+            </div>
+          </div>
+        </div>
+
+        {/* Formal Ledger Summary Box */}
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 print:border-slate-300 bg-white dark:bg-[#0B1120] print:bg-white p-4 sm:p-5 space-y-3 tabular-nums">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-100 dark:border-slate-800 print:border-slate-200">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200 print:text-black">
+              Accountability Ledger Summary
+            </h4>
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 print:text-emerald-800">
+              <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+              {authorisationLabel}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#11192C] print:bg-slate-50 border border-slate-200/70 dark:border-slate-800">
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                Opening Balance (Ledger Inception)
+              </span>
+              <span className="font-bold text-slate-900 dark:text-white print:text-black text-sm mt-0.5 block">
+                MK 0
+              </span>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#11192C] print:bg-slate-50 border border-slate-200/70 dark:border-slate-800">
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                Verified Contributions Received
+              </span>
+              <span className="font-bold text-emerald-700 dark:text-emerald-400 print:text-emerald-800 text-sm mt-0.5 block">
+                + {formatMWK(summary.totalVerified)}
+              </span>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#11192C] print:bg-slate-50 border border-slate-200/70 dark:border-slate-800">
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                Approved Expenses Paid
+              </span>
+              <span className="font-bold text-rose-700 dark:text-rose-400 print:text-rose-800 text-sm mt-0.5 block">
+                - {formatMWK(totalApprovedExpenses)}
+              </span>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#11192C] print:bg-slate-50 border border-slate-200/70 dark:border-slate-800">
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                Pending Proofs ({pendingProofs.length} awaiting check)
+              </span>
+              <span className="font-bold text-amber-700 dark:text-amber-400 print:text-amber-800 text-sm mt-0.5 block">
+                {formatMWK(pendingProofsTotal)}
+              </span>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#11192C] print:bg-slate-50 border border-slate-200/70 dark:border-slate-800">
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                Reversals &amp; Adjustments ({reversedPayments.length})
+              </span>
+              <span className="font-bold text-slate-700 dark:text-slate-300 print:text-slate-800 text-sm mt-0.5 block">
+                {formatMWK(reversalsTotal)}
+              </span>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-900 dark:bg-blue-950/60 print:bg-slate-100 border border-slate-900 dark:border-blue-800 print:border-slate-300 text-white print:text-black">
+              <span className="text-[11px] text-slate-300 dark:text-blue-200 print:text-slate-600 block">
+                Closing Net Treasury Balance
+              </span>
+              <span className="font-extrabold text-sm mt-0.5 block">
+                {formatSignedMWK(summary.remainingGroupFunds)}
+              </span>
             </div>
           </div>
         </div>

@@ -9,13 +9,22 @@ import {
   CreditCard,
   AlertTriangle,
   DollarSign,
+  SlidersHorizontal,
 } from 'lucide-react';
 
 export const NotificationsCenterView: React.FC = () => {
-  const { notifications, markNotificationRead, markAllNotificationsRead, currentUser } = useApp();
+  const {
+    notifications,
+    markNotificationRead,
+    markAllNotificationsRead,
+    currentUser,
+    notificationConfig,
+    updateNotificationConfig,
+  } = useApp();
   const { showToast } = useToast();
 
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
+  const [showPrefs, setShowPrefs] = useState<boolean>(false);
 
   const userNotifications = notifications.filter(
     (n) => !n.userId || (currentUser && n.userId === currentUser.id)
@@ -54,24 +63,108 @@ export const NotificationsCenterView: React.FC = () => {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            markAllNotificationsRead();
-            if (unreadCount > 0) {
-              showToast('Notifications cleared', {
-                message: `Marked ${unreadCount} unread notification(s) as read.`,
-                variant: 'success',
-              });
-            }
-          }}
-          disabled={unreadCount === 0}
-          className="min-h-[44px] inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white bg-slate-100 hover:bg-slate-200 dark:bg-[#131D33] dark:hover:bg-[#1A2744] disabled:opacity-50 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-xl transition-colors cursor-pointer whitespace-nowrap"
-        >
-          <CheckCheck className="w-4 h-4" />
-          <span>Mark all as read</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowPrefs((prev) => !prev)}
+            aria-expanded={showPrefs}
+            className="min-h-[44px] inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-[#11192C] hover:bg-slate-50 dark:hover:bg-[#18233D] border border-slate-200 dark:border-slate-700 px-3.5 py-2 rounded-xl transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <SlidersHorizontal className="w-4 h-4" />
+            <span>Preferences</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              markAllNotificationsRead();
+              if (unreadCount > 0) {
+                showToast('Notifications cleared', {
+                  message: `Marked ${unreadCount} unread notification(s) as read.`,
+                  variant: 'success',
+                });
+              }
+            }}
+            disabled={unreadCount === 0}
+            className="min-h-[44px] inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white bg-slate-100 hover:bg-slate-200 dark:bg-[#131D33] dark:hover:bg-[#1A2744] disabled:opacity-50 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-xl transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <CheckCheck className="w-4 h-4" />
+            <span>Mark all as read</span>
+          </button>
+        </div>
       </div>
+
+      {/* Notification Preferences Panel */}
+      {showPrefs && (
+        <div className="bg-white dark:bg-[#0D1424] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 space-y-3 text-xs shadow-xs">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+              Notification Preferences
+            </h3>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+              Control which activity alerts are delivered to your workspace. Dispute and security notices always stay enabled.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            {[
+              {
+                key: 'autoObligationNotice' as const,
+                label: 'New Contributions & Group Announcements',
+                desc: 'Notify when new bills or member invites occur.',
+              },
+              {
+                key: 'autoUpcomingDeadlines' as const,
+                label: 'Upcoming Payment Deadlines',
+                desc: 'Remind ahead of scheduled contribution due dates.',
+              },
+              {
+                key: 'autoOverdueAlerts' as const,
+                label: 'Overdue Balance Alerts',
+                desc: 'Highlight unpaid obligations past deadline.',
+              },
+              {
+                key: 'autoPaymentConfirmations' as const,
+                label: 'Payment Confirmations',
+                desc: 'Notify when proofs are recorded or verified.',
+              },
+              {
+                key: 'autoClearedBalanceNotes' as const,
+                label: 'Cleared Balance Notices',
+                desc: 'Confirm when a contribution share reaches MK 0 owed.',
+              },
+            ].map((item) => {
+              const enabled = Boolean(notificationConfig[item.key]);
+              return (
+                <label
+                  key={item.key}
+                  className="flex items-start justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-[#11192C] border border-slate-200/80 dark:border-slate-800 cursor-pointer"
+                >
+                  <div>
+                    <div className="font-semibold text-slate-900 dark:text-white">
+                      {item.label}
+                    </div>
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      {item.desc}
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(e) => {
+                      updateNotificationConfig({ [item.key]: e.target.checked });
+                      showToast('Notification preference updated', {
+                        message: `${item.label} ${e.target.checked ? 'enabled' : 'paused'}.`,
+                        variant: 'info',
+                      });
+                    }}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-600 cursor-pointer shrink-0"
+                  />
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Filter Tabs */}
       <div className="flex gap-2 text-xs">

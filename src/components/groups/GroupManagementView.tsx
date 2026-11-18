@@ -8,6 +8,7 @@ import {
   STOVE_TYPE_LABELS,
   buildInviteUrl,
   isAccommodationGroup,
+  isInviteExpired,
   isValidStoveType,
   resolveMemberInfo,
 } from '../../utils/financialConfig';
@@ -15,7 +16,10 @@ import {
   GROUP_CATEGORY_LIST,
   getGroupPreset,
 } from '../../utils/groupPresets';
-import { canManageGroupRole } from '../../utils/centralizedFinancialAdmin';
+import {
+  canManageGroupRole,
+  validateLeaveGroupEligibility,
+} from '../../utils/centralizedFinancialAdmin';
 import { Modal } from '../ui/Modal';
 import { EmptyState } from '../ui/EmptyState';
 import {
@@ -44,12 +48,16 @@ import {
   Unlock,
   Clock,
   X,
+  Share2,
+  LogOut,
+  LayoutDashboard,
 } from 'lucide-react';
 import { MemberWelcomeModal } from './MemberWelcomeModal';
 
 export const GroupManagementView: React.FC<{
   onOpenJoinGroup?: () => void;
-}> = ({ onOpenJoinGroup }) => {
+  onNavigateDashboard?: () => void;
+}> = ({ onOpenJoinGroup, onNavigateDashboard }) => {
   const {
     groups,
     currentGroup,
@@ -61,6 +69,7 @@ export const GroupManagementView: React.FC<{
     updateGroup,
     archiveGroup,
     transferGroupOwnership,
+    leaveGroup,
     approveJoinRequest,
     regenerateGroupInvite,
     addMemberToGroup,
@@ -81,25 +90,23 @@ export const GroupManagementView: React.FC<{
     [currentGroup?.category]
   );
 
+  // Create Group Modal (streamlined to 3 core inputs + post-creation invite prompt)
   const [isCreating, setIsCreating] = useState(false);
   const [name, setName] = useState('');
   const [category, setCategory] = useState<Group['category']>('house');
-  const [joinPolicy, setJoinPolicy] = useState<GroupJoinPolicy>('code_auto');
   const [description, setDescription] = useState('');
-  const [paymentRules, setPaymentRules] = useState(
-    getGroupPreset('house').defaultRulesPlaceholder
-  );
-  const [rulesTouched, setRulesTouched] = useState(false);
+  const [postCreateGroupId, setPostCreateGroupId] = useState<string | null>(null);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
   const [copiedInviteUrl, setCopiedInviteUrl] = useState(false);
   const [inviteActionBusy, setInviteActionBusy] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
-  // Edit Group Modal
+  // Edit Group Modal (includes joinPolicy & payment rules)
   const [isEditingGroup, setIsEditingGroup] = useState(false);
   const [editGroupName, setEditGroupName] = useState('');
   const [editGroupDesc, setEditGroupDesc] = useState('');
   const [editGroupRules, setEditGroupRules] = useState('');
+  const [editJoinPolicy, setEditJoinPolicy] = useState<GroupJoinPolicy>('code_auto');
 
   // Archive Group Modal
   const [isArchivingGroup, setIsArchivingGroup] = useState(false);
@@ -110,22 +117,29 @@ export const GroupManagementView: React.FC<{
   const [transferCandidateId, setTransferCandidateId] = useState('');
   const [transferReason, setTransferReason] = useState('');
 
-  // Add Member Modal State
+  // Add Member Modal State (clean directory entry — no stove fields)
   const [isAddingMember, setIsAddingMember] = useState(false);
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberEmail, setNewMemberEmail] = useState('');
   const [newMemberPhone, setNewMemberPhone] = useState('+265 ');
   const [newMemberRole, setNewMemberRole] = useState<'admin' | 'treasurer' | 'member'>('member');
-  const [newMemberStoveType, setNewMemberStoveType] = useState<StoveType | ''>('');
   const [newMemberRoom, setNewMemberRoom] = useState('');
   const [newMemberNotes, setNewMemberNotes] = useState('');
   const [addMemberError, setAddMemberError] = useState<string | null>(null);
 
-  // Stove Update Modal
+  // Accommodation-Only Electricity Stove Settings & Single-Member Modal
+  const [isStoveSettingsOpen, setIsStoveSettingsOpen] = useState(false);
   const [stoveModalMember, setStoveModalMember] = useState<GroupMember | null>(null);
   const [stoveModalType, setStoveModalType] = useState<StoveType>('non_electric');
   const [stoveModalReason, setStoveModalReason] = useState('');
   const [stoveModalError, setStoveModalError] = useState('');
+
+  // Leave Group Confirmation Modal State
+  const [isLeavingGroup, setIsLeavingGroup] = useState(false);
+  const [leaveTransferCandidateId, setLeaveTransferCandidateId] = useState('');
+  const [leaveReason, setLeaveReason] = useState('');
+  const [leaveBusy, setLeaveBusy] = useState(false);
+  const [leaveError, setLeaveError] = useState<string | null>(null);
 
   // Role Change Modal
   const [roleModalMember, setRoleModalMember] = useState<GroupMember | null>(null);
@@ -150,15 +164,20 @@ export const GroupManagementView: React.FC<{
   } | null>(null);
   const [suspendReason, setSuspendReason] = useState('');
 
-  // Directory filter & live search
-  const [directoryFilter, setDirectoryFilter] = useState<'active' | 'suspended' | 'departed'>(
-    'active'
-  );
+  // Directory filter (all 5 membership states) & live search
+  const [directoryFilter, setDirectoryFilter] = useState<
+    'active' | 'invited' | 'left' | 'removed' | 'suspended'
+  >('active');
   const [memberSearch, setMemberSearch] = useState('');
 
   const activeGroups = useMemo(
     () => groups.filter((g) => g.status !== 'archived'),
     [groups]
+  );
+
+  const postCreatedGroup = useMemo(
+    () => (postCreateGroupId ? groups.find((g) => g.id === postCreateGroupId) || null : null),
+    [groups, postCreateGroupId]
   );
 
   const pendingJoinRequests = useMemo(() => {
@@ -180,22 +199,40 @@ export const GroupManagementView: React.FC<{
     );
   }, [currentGroup, groupMembers]);
 
-  const departedMembers = useMemo(() => {
+  const leftMembers = useMemo(() => {
     if (!currentGroup) return [];
     return groupMembers.filter(
-      (gm) =>
-        gm.groupId === currentGroup.id &&
-        (gm.status === 'departed' || gm.status === 'removed')
+      (gm) => gm.groupId === currentGroup.id && gm.status === 'departed'
     );
   }, [currentGroup, groupMembers]);
 
+  const removedMembers = useMemo(() => {
+    if (!currentGroup) return [];
+    return groupMembers.filter(
+      (gm) => gm.groupId === currentGroup.id && gm.status === 'removed'
+    );
+  }, [currentGroup, groupMembers]);
+
+  const leaveEligibility = useMemo(() => {
+    if (!currentGroup || !currentUser) return null;
+    return validateLeaveGroupEligibility({
+      userId: currentUser.id,
+      group: currentGroup,
+      groupMembers,
+      transferToMemberId: leaveTransferCandidateId || undefined,
+    });
+  }, [currentGroup, currentUser, groupMembers, leaveTransferCandidateId]);
+
   const displayedMembers = useMemo(() => {
+    if (directoryFilter === 'invited') return [];
     const base =
       directoryFilter === 'active'
         ? activeMembers
         : directoryFilter === 'suspended'
           ? suspendedMembers
-          : departedMembers;
+          : directoryFilter === 'left'
+            ? leftMembers
+            : removedMembers;
 
     const q = memberSearch.trim().toLowerCase();
     if (!q) return base;
@@ -205,7 +242,15 @@ export const GroupManagementView: React.FC<{
         .toLowerCase()
         .includes(q)
     );
-  }, [directoryFilter, activeMembers, suspendedMembers, departedMembers, memberSearch]);
+  }, [directoryFilter, activeMembers, suspendedMembers, leftMembers, removedMembers, memberSearch]);
+
+  const filteredInvitedRequests = useMemo(() => {
+    const q = memberSearch.trim().toLowerCase();
+    if (!q) return pendingJoinRequests;
+    return pendingJoinRequests.filter((r) =>
+      `${r.name} ${r.email} ${r.phone || ''}`.toLowerCase().includes(q)
+    );
+  }, [pendingJoinRequests, memberSearch]);
 
   const handleCopy = (code: string) => {
     navigator.clipboard.writeText(code);
@@ -222,26 +267,51 @@ export const GroupManagementView: React.FC<{
     setTimeout(() => setCopiedInviteUrl(false), 2000);
   };
 
+  const handleShareInviteLink = async (group: Group) => {
+    const url = buildInviteUrl(group.joinCode);
+    const shareText = `Join "${group.name}" on UNIT SPOT.\nInvite code: ${group.joinCode}\nLink: ${url}`;
+    if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+      try {
+        await navigator.share({
+          title: `Join ${group.name} on UNIT SPOT`,
+          text: shareText,
+          url,
+        });
+        return;
+      } catch {
+        // User cancelled or share unsupported — fall back to clipboard copy
+      }
+    }
+    navigator.clipboard.writeText(shareText);
+    setCopiedInviteUrl(true);
+    showToast('Invitation Ready to Share', {
+      message: 'Copied invitation message & link to your clipboard.',
+    });
+    setTimeout(() => setCopiedInviteUrl(false), 2000);
+  };
+
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
 
-    createGroup({
+    const createdId = createGroup({
       name: name.trim(),
       category,
-      joinPolicy,
+      joinPolicy: 'code_auto',
       description: description.trim(),
-      paymentRules: paymentRules.trim(),
+      paymentRules: '',
       defaultCurrency: 'MWK',
     });
 
     showToast('Group Created', {
-      message: `${name.trim()} is now active. Share its invite code with members.`,
+      message: `${name.trim()} is active. Invite members by link or code.`,
     });
     setName('');
     setDescription('');
-    setRulesTouched(false);
     setIsCreating(false);
+    if (createdId) {
+      setPostCreateGroupId(createdId);
+    }
   };
 
   const openEditGroup = () => {
@@ -249,6 +319,7 @@ export const GroupManagementView: React.FC<{
     setEditGroupName(currentGroup.name);
     setEditGroupDesc(currentGroup.description);
     setEditGroupRules(currentGroup.paymentRules);
+    setEditJoinPolicy(currentGroup.joinPolicy || 'code_auto');
     setIsEditingGroup(true);
   };
 
@@ -259,6 +330,7 @@ export const GroupManagementView: React.FC<{
       name: editGroupName.trim(),
       description: editGroupDesc.trim(),
       paymentRules: editGroupRules.trim(),
+      joinPolicy: editJoinPolicy,
     });
     if (!res.success) {
       setErrorBanner(res.error || 'Could not update group.');
@@ -310,17 +382,11 @@ export const GroupManagementView: React.FC<{
       return;
     }
 
-    const optionalStove =
-      showStoveFeatures && isValidStoveType(newMemberStoveType)
-        ? newMemberStoveType
-        : undefined;
-
     const result = addMemberToGroup({
       name: newMemberName.trim(),
       email: newMemberEmail.trim(),
       phone: newMemberPhone.trim(),
       role: newMemberRole,
-      stoveType: optionalStove,
       roomNumber: newMemberRoom.trim() || undefined,
       notes: newMemberNotes.trim() || undefined,
     });
@@ -335,16 +401,39 @@ export const GroupManagementView: React.FC<{
         message: `${result.user.name} added to ${currentGroup?.name}.`,
       });
       setNewlyAddedMember(result.user);
-      setNewlyAddedStoveType(optionalStove);
+      setNewlyAddedStoveType(undefined);
       setIsWelcomeModalOpen(true);
       setNewMemberName('');
       setNewMemberEmail('');
       setNewMemberPhone('+265 ');
-      setNewMemberStoveType('');
       setNewMemberRoom('');
       setNewMemberNotes('');
       setIsAddingMember(false);
     }
+  };
+
+  const handleConfirmLeaveGroup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentGroup || leaveBusy) return;
+    setLeaveError(null);
+    setLeaveBusy(true);
+    const groupTitle = currentGroup.name;
+    const res = await leaveGroup(currentGroup.id, {
+      transferToMemberId: leaveTransferCandidateId || undefined,
+      reason: leaveReason,
+    });
+    setLeaveBusy(false);
+    if (!res.success) {
+      setLeaveError(res.error || 'Could not leave group right now.');
+      return;
+    }
+    setIsLeavingGroup(false);
+    setLeaveTransferCandidateId('');
+    setLeaveReason('');
+    showToast('Left Group', {
+      message: `You have left "${groupTitle}". Your historical payment records remain preserved.`,
+      variant: 'info',
+    });
   };
 
   const handleSaveStoveType = (e: React.FormEvent) => {
@@ -602,6 +691,16 @@ export const GroupManagementView: React.FC<{
                     <UserPlus className="w-3.5 h-3.5" />
                     <span>Add Member</span>
                   </button>
+                  {showStoveFeatures && (
+                    <button
+                      type="button"
+                      onClick={() => setIsStoveSettingsOpen(true)}
+                      className="min-h-[44px] inline-flex items-center gap-1.5 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-amber-900 dark:text-amber-300 border border-amber-200 dark:border-amber-800 px-3 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      <Flame className="w-3.5 h-3.5" />
+                      <span>Electricity Stove Settings</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={openEditGroup}
@@ -628,6 +727,19 @@ export const GroupManagementView: React.FC<{
                   </button>
                 </>
               )}
+              <button
+                type="button"
+                onClick={() => {
+                  setLeaveError(null);
+                  setLeaveTransferCandidateId('');
+                  setLeaveReason('');
+                  setIsLeavingGroup(true);
+                }}
+                className="min-h-[44px] inline-flex items-center gap-1.5 bg-white dark:bg-[#11192C] hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/70 px-3 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Leave Group</span>
+              </button>
             </div>
           </div>
 
@@ -644,12 +756,22 @@ export const GroupManagementView: React.FC<{
                       <Lock className="w-3 h-3" />
                       Invites Paused
                     </span>
+                  ) : isInviteExpired(currentGroup.inviteExpiresAt, currentGroup.inviteExpiresAtMs) ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-700 dark:text-amber-400">
+                      <Clock className="w-3 h-3" />
+                      Invite Expired — Generate a new code
+                    </span>
                   ) : (
                     <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">
                       <Unlock className="w-3 h-3" />
                       {currentGroup.joinPolicy === 'admin_approval'
                         ? 'Admin approval required'
                         : 'Instant join active'}
+                      {currentGroup.inviteExpiresAt && (
+                        <span className="text-slate-500 dark:text-slate-400 font-normal ml-1">
+                          (Expires {new Date(currentGroup.inviteExpiresAt).toLocaleDateString()})
+                        </span>
+                      )}
                     </span>
                   )}
                 </div>
@@ -840,42 +962,31 @@ export const GroupManagementView: React.FC<{
             )}
           </div>
 
-          {/* Directory Tabs + Live Member Search */}
+          {/* Directory Tabs (all 5 states) + Live Member Search */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
             <div className="flex flex-wrap items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => setDirectoryFilter('active')}
-                className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
-                  directoryFilter === 'active'
-                    ? 'bg-slate-900 dark:bg-blue-600 text-white'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#131D33]'
-                }`}
-              >
-                Active ({activeMembers.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setDirectoryFilter('suspended')}
-                className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
-                  directoryFilter === 'suspended'
-                    ? 'bg-slate-900 dark:bg-blue-600 text-white'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#131D33]'
-                }`}
-              >
-                Suspended ({suspendedMembers.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setDirectoryFilter('departed')}
-                className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
-                  directoryFilter === 'departed'
-                    ? 'bg-slate-900 dark:bg-blue-600 text-white'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#131D33]'
-                }`}
-              >
-                Moved Out / Removed ({departedMembers.length})
-              </button>
+              {(
+                [
+                  { id: 'active', label: `Active (${activeMembers.length})` },
+                  { id: 'invited', label: `Invited (${pendingJoinRequests.length})` },
+                  { id: 'left', label: `Left group (${leftMembers.length})` },
+                  { id: 'removed', label: `Removed (${removedMembers.length})` },
+                  { id: 'suspended', label: `Suspended (${suspendedMembers.length})` },
+                ] as const
+              ).map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setDirectoryFilter(tab.id)}
+                  className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
+                    directoryFilter === tab.id
+                      ? 'bg-slate-900 dark:bg-blue-600 text-white'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#131D33]'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
 
             <div className="relative w-full sm:w-64">
@@ -891,7 +1002,72 @@ export const GroupManagementView: React.FC<{
             </div>
           </div>
 
-          {displayedMembers.length === 0 ? (
+          {directoryFilter === 'invited' ? (
+            filteredInvitedRequests.length === 0 ? (
+              <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-400 space-y-2">
+                <p className="font-semibold text-slate-700 dark:text-slate-300">
+                  {memberSearch.trim()
+                    ? `No invited requests match "${memberSearch.trim()}".`
+                    : 'No pending invite requests awaiting approval. Share your group invite link above so members can join.'}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {filteredInvitedRequests.map((req) => (
+                  <div
+                    key={req.id}
+                    className="p-4 rounded-2xl bg-slate-50/70 dark:bg-[#11192C] border border-amber-200/80 dark:border-amber-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                  >
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-sm text-slate-900 dark:text-white">
+                          {req.name}
+                        </span>
+                        <span className="inline-flex px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60">
+                          Invited
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {req.email} {req.phone ? `· ${req.phone}` : ''}
+                      </div>
+                    </div>
+                    {isGroupAdmin && (
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const res = await approveJoinRequest(currentGroup.id, req.id, false);
+                            if (res.success) {
+                              showToast('Request Declined', { variant: 'info' });
+                            }
+                          }}
+                          className="min-h-[38px] inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 font-semibold cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                          <span>Decline</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const res = await approveJoinRequest(currentGroup.id, req.id, true);
+                            if (res.success) {
+                              showToast('Member Approved', {
+                                message: `${req.name} can now access ${currentGroup.name}.`,
+                              });
+                            }
+                          }}
+                          className="min-h-[38px] inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold cursor-pointer"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Approve</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )
+          ) : displayedMembers.length === 0 ? (
             <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-400 space-y-2">
               <p className="font-semibold text-slate-700 dark:text-slate-300">
                 {memberSearch.trim()
@@ -900,7 +1076,9 @@ export const GroupManagementView: React.FC<{
                     ? 'No active members enrolled in this group yet.'
                     : directoryFilter === 'suspended'
                       ? 'No suspended members.'
-                      : 'No departed or removed members recorded.'}
+                      : directoryFilter === 'left'
+                        ? 'No members have voluntarily left this group.'
+                        : 'No removed members recorded.'}
               </p>
               {memberSearch.trim() && (
                 <button
@@ -950,9 +1128,37 @@ export const GroupManagementView: React.FC<{
                             </div>
                           </div>
                         </div>
-                        <span className="text-[11px] font-semibold capitalize text-slate-600 dark:text-slate-300 shrink-0">
-                          {member.roleInGroup}
-                        </span>
+                        <div className="flex flex-col items-end gap-1 shrink-0">
+                          <span className="text-[11px] font-semibold capitalize text-slate-600 dark:text-slate-300">
+                            {member.roleInGroup}
+                          </span>
+                          {member.status === 'active' ? (
+                            <span className="inline-flex px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
+                              Active
+                            </span>
+                          ) : member.status === 'suspended' ? (
+                            <span
+                              className="inline-flex px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60"
+                              title={member.suspensionReason}
+                            >
+                              Suspended
+                            </span>
+                          ) : member.status === 'departed' ? (
+                            <span
+                              className="inline-flex px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700"
+                              title={member.departureReason}
+                            >
+                              Left group
+                            </span>
+                          ) : (
+                            <span
+                              className="inline-flex px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60"
+                              title={member.removalReason}
+                            >
+                              Removed
+                            </span>
+                          )}
+                        </div>
                       </div>
 
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600 dark:text-slate-300 tabular-nums">
@@ -1076,9 +1282,6 @@ export const GroupManagementView: React.FC<{
                                 setNewMemberEmail(member.email);
                                 setNewMemberPhone(member.phone || '+265 ');
                                 setNewMemberRole(member.roleInGroup);
-                                setNewMemberStoveType(
-                                  isValidStoveType(member.stoveType) ? member.stoveType : ''
-                                );
                                 setNewMemberRoom(member.roomNumber || '');
                                 setAddMemberError(null);
                                 setIsAddingMember(true);
@@ -1196,22 +1399,29 @@ export const GroupManagementView: React.FC<{
 
                           <td className="py-3.5 pr-3">
                             {member.status === 'active' ? (
-                              <span className="text-emerald-700 dark:text-emerald-400 font-semibold">
+                              <span className="inline-flex px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
                                 Active
                               </span>
                             ) : member.status === 'suspended' ? (
                               <span
-                                className="text-amber-700 dark:text-amber-400 font-semibold"
+                                className="inline-flex px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60"
                                 title={member.suspensionReason}
                               >
                                 Suspended
                               </span>
+                            ) : member.status === 'departed' ? (
+                              <span
+                                className="inline-flex px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700"
+                                title={member.departureReason}
+                              >
+                                Left group
+                              </span>
                             ) : (
                               <span
-                                className="text-slate-500 dark:text-slate-400 font-semibold"
-                                title={member.removalReason || member.departureReason}
+                                className="inline-flex px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60"
+                                title={member.removalReason}
                               >
-                                {member.status === 'departed' ? 'Moved Out' : 'Removed'}
+                                Removed
                               </span>
                             )}
                           </td>
@@ -1313,9 +1523,6 @@ export const GroupManagementView: React.FC<{
                                       setNewMemberEmail(member.email);
                                       setNewMemberPhone(member.phone || '+265 ');
                                       setNewMemberRole(member.roleInGroup);
-                                      setNewMemberStoveType(
-                                        isValidStoveType(member.stoveType) ? member.stoveType : ''
-                                      );
                                       setNewMemberRoom(member.roomNumber || '');
                                       setAddMemberError(null);
                                       setIsAddingMember(true);
@@ -1392,54 +1599,6 @@ export const GroupManagementView: React.FC<{
               required
             />
           </div>
-
-          {showStoveFeatures && (
-            <div>
-              <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
-                Stove Classification (Optional — for Electricity Tiers)
-              </label>
-              <div className="grid grid-cols-2 gap-2.5 tabular-nums">
-                {(['electric', 'non_electric'] as const).map((tier) => (
-                  <label
-                    key={tier}
-                    className={`p-3 rounded-xl border cursor-pointer transition-colors ${
-                      newMemberStoveType === tier
-                        ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-blue-600 text-white shadow-xs'
-                        : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#11192C] hover:bg-slate-50 dark:hover:bg-[#18233D] text-slate-800 dark:text-slate-200'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="stoveType"
-                      value={tier}
-                      checked={newMemberStoveType === tier}
-                      onChange={() =>
-                        setNewMemberStoveType(newMemberStoveType === tier ? '' : tier)
-                      }
-                      className="sr-only"
-                    />
-                    <div className="font-bold text-xs flex items-center gap-1.5">
-                      {tier === 'electric' ? (
-                        <Zap className="w-3.5 h-3.5 text-[#E5B93C]" />
-                      ) : (
-                        <Flame className="w-3.5 h-3.5 text-[#E5B93C]" />
-                      )}
-                      <span>{STOVE_TYPE_LABELS[tier]}</span>
-                    </div>
-                    <div
-                      className={`text-xs font-extrabold font-mono mt-1 ${
-                        newMemberStoveType === tier
-                          ? 'text-emerald-300 dark:text-white'
-                          : 'text-slate-600 dark:text-slate-300'
-                      }`}
-                    >
-                      {formatMWK(RATES[tier])} / cycle
-                    </div>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
 
           <div>
             <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
@@ -1586,37 +1745,14 @@ export const GroupManagementView: React.FC<{
         </form>
       </Modal>
 
-      {/* Create Group Modal */}
+      {/* Create Group Modal (Streamlined 3-field intake) */}
       <Modal
         isOpen={isCreating}
         onClose={() => setIsCreating(false)}
         title="Create a Group"
-        subtitle="Set up a clear shared ledger in Malawi Kwacha (MWK)"
+        subtitle="Set up a shared ledger in Malawi Kwacha (MWK) in seconds"
       >
         <form onSubmit={handleCreate} className="space-y-4 text-xs">
-          <div>
-            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
-              Group Type *
-            </label>
-            <select
-              value={category}
-              onChange={(e) => {
-                const nextCat = e.target.value as Group['category'];
-                setCategory(nextCat);
-                if (!rulesTouched) {
-                  setPaymentRules(getGroupPreset(nextCat).defaultRulesPlaceholder);
-                }
-              }}
-              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
-            >
-              {GROUP_CATEGORY_LIST.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.label} — {preset.description}
-                </option>
-              ))}
-            </select>
-          </div>
-
           <div>
             <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
               Group Name *
@@ -1632,35 +1768,20 @@ export const GroupManagementView: React.FC<{
           </div>
 
           <div>
-            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
-              How Members Join
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+              Group Type *
             </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setJoinPolicy('code_auto')}
-                className={`p-2.5 rounded-xl border text-left cursor-pointer transition-colors ${
-                  joinPolicy === 'code_auto'
-                    ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-blue-600 text-white'
-                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#11192C] text-slate-800 dark:text-slate-200'
-                }`}
-              >
-                <div className="font-bold">Instant with Code</div>
-                <div className="text-[11px] opacity-80 mt-0.5">Anyone with invite joins fast</div>
-              </button>
-              <button
-                type="button"
-                onClick={() => setJoinPolicy('admin_approval')}
-                className={`p-2.5 rounded-xl border text-left cursor-pointer transition-colors ${
-                  joinPolicy === 'admin_approval'
-                    ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-blue-600 text-white'
-                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#11192C] text-slate-800 dark:text-slate-200'
-                }`}
-              >
-                <div className="font-bold">Admin Approval</div>
-                <div className="text-[11px] opacity-80 mt-0.5">You approve each join request</div>
-              </button>
-            </div>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value as Group['category'])}
+              className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
+            >
+              {GROUP_CATEGORY_LIST.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label} — {preset.description}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div>
@@ -1672,21 +1793,6 @@ export const GroupManagementView: React.FC<{
               placeholder="What is this group for?"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200"
-            />
-          </div>
-
-          <div>
-            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
-              Group Payment Rules
-            </label>
-            <textarea
-              rows={2}
-              value={paymentRules}
-              onChange={(e) => {
-                setRulesTouched(true);
-                setPaymentRules(e.target.value);
-              }}
               className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200"
             />
           </div>
@@ -1709,7 +1815,175 @@ export const GroupManagementView: React.FC<{
         </form>
       </Modal>
 
-      {/* Edit Group Modal */}
+      {/* Post-Creation Invite Members Modal */}
+      <Modal
+        isOpen={Boolean(postCreatedGroup)}
+        onClose={() => setPostCreateGroupId(null)}
+        title={postCreatedGroup ? `Group Ready — ${postCreatedGroup.name}` : 'Group Created'}
+        subtitle="Invite members right away with your unique code or link"
+      >
+        {postCreatedGroup && (
+          <div className="space-y-4 text-xs">
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Group Invite Code
+                </span>
+                {postCreatedGroup.inviteExpiresAt && (
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Valid until {new Date(postCreatedGroup.inviteExpiresAt).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+              <div className="font-mono text-lg font-extrabold text-slate-900 dark:text-white tracking-wider">
+                {postCreatedGroup.joinCode}
+              </div>
+              <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 break-all">
+                {buildInviteUrl(postCreatedGroup.joinCode)}
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => handleCopyInviteLink(postCreatedGroup.joinCode)}
+                className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white font-bold cursor-pointer"
+              >
+                <Link2 className="w-3.5 h-3.5" />
+                <span>{copiedInviteUrl ? 'Copied Link' : 'Copy Invite Link'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleShareInviteLink(postCreatedGroup)}
+                className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold cursor-pointer"
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                <span>Share Link</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleCopy(postCreatedGroup.joinCode)}
+                className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 font-semibold cursor-pointer"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>{copiedCode === postCreatedGroup.joinCode ? 'Copied!' : 'Copy Code'}</span>
+              </button>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPostCreateGroupId(null);
+                    setAddMemberError(null);
+                    setIsAddingMember(true);
+                  }}
+                  className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-[#131D33] text-slate-800 dark:text-slate-200 font-semibold cursor-pointer"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Add Member Directly</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPostCreateGroupId(null);
+                    openEditGroup();
+                  }}
+                  className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-[#131D33] text-slate-800 dark:text-slate-200 font-semibold cursor-pointer"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>Group Settings</span>
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setPostCreateGroupId(null);
+                  onNavigateDashboard?.();
+                }}
+                className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-slate-900 dark:bg-blue-600 text-white font-bold cursor-pointer"
+              >
+                <LayoutDashboard className="w-3.5 h-3.5" />
+                <span>Go to Dashboard</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Accommodation-Only Electricity Stove Settings Modal */}
+      <Modal
+        isOpen={Boolean(isStoveSettingsOpen && showStoveFeatures && currentGroup)}
+        onClose={() => setIsStoveSettingsOpen(false)}
+        title={`Electricity Stove Settings — ${currentGroup?.name || ''}`}
+        subtitle="Optional accommodation tiers (Electric MK 10,000 · Non-Electric MK 5,000)"
+        maxWidthClass="max-w-xl"
+      >
+        <div className="space-y-4 text-xs">
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300">
+            Configure stove classifications per member for Electricity Stove Tier billing. Changes only apply to future electricity bills and preserve all historical records.
+          </div>
+
+          {activeMembers.length === 0 ? (
+            <p className="text-slate-500 dark:text-slate-400 text-center py-4">
+              No active members in this group yet.
+            </p>
+          ) : (
+            <div className="divide-y divide-slate-100 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+              {activeMembers.map((member) => (
+                <div
+                  key={member.id}
+                  className="p-3 bg-white dark:bg-[#0D1424] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                >
+                  <div className="min-w-0">
+                    <div className="font-bold text-slate-900 dark:text-white truncate">
+                      {member.name}
+                    </div>
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                      {member.roomNumber || 'Room unset'} · {member.email}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">
+                      {isValidStoveType(member.stoveType)
+                        ? `${STOVE_TYPE_LABELS[member.stoveType]} (${formatMWK(RATES[member.stoveType])})`
+                        : 'Unset'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsStoveSettingsOpen(false);
+                        setStoveModalMember(member);
+                        setStoveModalType(
+                          isValidStoveType(member.stoveType) ? member.stoveType : 'non_electric'
+                        );
+                        setStoveModalReason('');
+                        setStoveModalError('');
+                      }}
+                      className="min-h-[36px] px-3 py-1 rounded-lg bg-slate-900 dark:bg-blue-600 text-white font-semibold cursor-pointer"
+                    >
+                      Set Tier
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setIsStoveSettingsOpen(false)}
+              className="min-h-[40px] px-4 py-2 rounded-xl bg-slate-100 dark:bg-[#131D33] text-slate-700 dark:text-slate-200 font-semibold cursor-pointer"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Edit Group Modal (includes Join Policy & Payment Rules) */}
       <Modal
         isOpen={Boolean(isEditingGroup && currentGroup)}
         onClose={() => setIsEditingGroup(false)}
@@ -1728,6 +2002,39 @@ export const GroupManagementView: React.FC<{
               className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-900 dark:text-white"
             />
           </div>
+
+          <div>
+            <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5">
+              How Members Join
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setEditJoinPolicy('code_auto')}
+                className={`p-2.5 rounded-xl border text-left cursor-pointer transition-colors ${
+                  editJoinPolicy === 'code_auto'
+                    ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-blue-600 text-white'
+                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#11192C] text-slate-800 dark:text-slate-200'
+                }`}
+              >
+                <div className="font-bold">Instant with Code</div>
+                <div className="text-[11px] opacity-80 mt-0.5">Anyone with invite joins fast</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditJoinPolicy('admin_approval')}
+                className={`p-2.5 rounded-xl border text-left cursor-pointer transition-colors ${
+                  editJoinPolicy === 'admin_approval'
+                    ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-blue-600 text-white'
+                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#11192C] text-slate-800 dark:text-slate-200'
+                }`}
+              >
+                <div className="font-bold">Admin Approval</div>
+                <div className="text-[11px] opacity-80 mt-0.5">You approve each join request</div>
+              </button>
+            </div>
+          </div>
+
           <div>
             <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
               Description
@@ -1745,6 +2052,7 @@ export const GroupManagementView: React.FC<{
             </label>
             <textarea
               rows={2}
+              placeholder={currentGroupPreset.defaultRulesPlaceholder}
               value={editGroupRules}
               onChange={(e) => setEditGroupRules(e.target.value)}
               className="w-full bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200"
@@ -2018,6 +2326,114 @@ export const GroupManagementView: React.FC<{
             </button>
           </div>
         </div>
+      </Modal>
+
+      {/* Leave Group Confirmation Modal */}
+      <Modal
+        isOpen={Boolean(isLeavingGroup && currentGroup)}
+        onClose={() => !leaveBusy && setIsLeavingGroup(false)}
+        title={`Leave Group — ${currentGroup?.name || ''}`}
+      >
+        {currentGroup && (
+          <form onSubmit={handleConfirmLeaveGroup} className="space-y-4 text-xs">
+            <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <p className="leading-relaxed font-medium">
+                You will lose access to this group&apos;s shared information. Your historical payment records will remain preserved. Leaving does not automatically settle outstanding contributions.
+              </p>
+            </div>
+
+            {leaveError && (
+              <div
+                role="alert"
+                className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 flex items-start gap-2"
+              >
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400 mt-0.5" />
+                <span>{leaveError}</span>
+              </div>
+            )}
+
+            {leaveEligibility?.requiresTransfer && leaveEligibility.otherActiveMembers.length === 0 ? (
+              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 space-y-2.5">
+                <p className="font-semibold text-slate-800 dark:text-slate-200">
+                  {leaveEligibility.error}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsLeavingGroup(false);
+                    setIsArchivingGroup(true);
+                  }}
+                  className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold cursor-pointer"
+                >
+                  <Archive className="w-3.5 h-3.5" />
+                  <span>Archive Group Instead</span>
+                </button>
+              </div>
+            ) : (
+              <>
+                {leaveEligibility?.requiresTransfer && (
+                  <div>
+                    <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+                      Transfer Admin Ownership Before Leaving *
+                    </label>
+                    <select
+                      required
+                      value={leaveTransferCandidateId}
+                      onChange={(e) => setLeaveTransferCandidateId(e.target.value)}
+                      className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-slate-900 dark:text-white"
+                    >
+                      <option value="">Select new group administrator...</option>
+                      {leaveEligibility.otherActiveMembers.map((m) => {
+                        const uid = m.linkedUserId || (!m.userId.startsWith('mem_') ? m.userId : '');
+                        return (
+                          <option key={m.id} value={m.id} disabled={!uid}>
+                            {m.name} ({m.email}){!uid ? ' — needs app sign-in first' : ''}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+                    Reason (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Moved out / semester ended"
+                    value={leaveReason}
+                    onChange={(e) => setLeaveReason(e.target.value)}
+                    className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-slate-900 dark:text-white"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    disabled={leaveBusy}
+                    onClick={() => setIsLeavingGroup(false)}
+                    className="min-h-[44px] px-4 py-2 font-semibold text-slate-600 dark:text-slate-300 rounded-xl cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={
+                      leaveBusy ||
+                      (Boolean(leaveEligibility?.requiresTransfer) && !leaveTransferCandidateId)
+                    }
+                    className="min-h-[44px] inline-flex items-center gap-1.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white px-4 py-2 font-bold rounded-xl cursor-pointer"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>{leaveBusy ? 'Leaving...' : 'Confirm Leave Group'}</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </form>
+        )}
       </Modal>
 
       {/* Member Welcome Modal */}

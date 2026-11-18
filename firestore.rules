@@ -124,8 +124,8 @@ service cloud.firestore {
              data.keys().hasOnly([
                'id', 'name', 'description', 'category', 'adminId', 'treasurerId',
                'memberUids', 'defaultCurrency', 'paymentRules', 'joinCode', 'joinPolicy',
-               'inviteRevoked', 'status', 'archivedAt', 'archivedBy', 'archiveReason',
-               'createdAt', 'updatedAt', 'memberCount'
+               'inviteRevoked', 'inviteExpiresAt', 'inviteExpiresAtMs', 'status',
+               'archivedAt', 'archivedBy', 'archiveReason', 'createdAt', 'updatedAt', 'memberCount'
              ]) &&
              isValidId(data.id) &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
@@ -138,6 +138,8 @@ service cloud.firestore {
              data.joinCode is string && data.joinCode.size() > 0 && data.joinCode.size() <= 50 &&
              (!('joinPolicy' in data) || data.joinPolicy in ['code_auto', 'admin_approval']) &&
              (!('inviteRevoked' in data) || data.inviteRevoked is bool) &&
+             (!('inviteExpiresAt' in data) || (data.inviteExpiresAt is string && data.inviteExpiresAt.size() <= 64)) &&
+             (!('inviteExpiresAtMs' in data) || data.inviteExpiresAtMs is number) &&
              (!('memberUids' in data) || (data.memberUids is list && data.memberUids.size() <= 200)) &&
              (!('memberCount' in data) || (data.memberCount is number && data.memberCount >= 0 && data.memberCount <= 500)) &&
              (!('status' in data) || data.status in ['active', 'archived']) &&
@@ -148,7 +150,7 @@ service cloud.firestore {
       return data.keys().hasAll(['inviteCode', 'groupId', 'groupName', 'category', 'joinPolicy', 'revoked', 'adminId', 'createdAt']) &&
              data.keys().hasOnly([
                'inviteCode', 'groupId', 'groupName', 'category', 'joinPolicy',
-               'revoked', 'adminId', 'createdAt', 'updatedAt'
+               'revoked', 'adminId', 'expiresAt', 'expiresAtMs', 'createdAt', 'updatedAt'
              ]) &&
              isValidId(data.inviteCode) &&
              isValidId(data.groupId) &&
@@ -157,6 +159,8 @@ service cloud.firestore {
              data.joinPolicy in ['code_auto', 'admin_approval'] &&
              data.revoked is bool &&
              isValidId(data.adminId) &&
+             (!('expiresAt' in data) || (data.expiresAt is string && data.expiresAt.size() <= 64)) &&
+             (!('expiresAtMs' in data) || data.expiresAtMs is number) &&
              data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 64;
     }
 
@@ -307,11 +311,12 @@ service cloud.firestore {
     function isValidCommitmentEvent(data) {
       return data.keys().hasAll(['id', 'commitmentId', 'date', 'eventType', 'notes', 'recordedBy']) &&
              data.keys().hasOnly([
-               'id', 'commitmentId', 'memberUid', 'date', 'eventType',
+               'id', 'commitmentId', 'groupId', 'memberUid', 'date', 'eventType',
                'notes', 'recordedBy', 'newPromisedDate', 'amountPaid'
              ]) &&
              isValidId(data.id) &&
              isValidId(data.commitmentId) &&
+             (!('groupId' in data) || isValidId(data.groupId)) &&
              (!('memberUid' in data) || isValidId(data.memberUid)) &&
              isValidId(data.recordedBy) &&
              data.eventType in ['created', 'reminder_sent', 'extension_requested', 'extension_approved', 'extension_declined', 'extension_granted', 'partial_payment', 'completed', 'broken', 'revised'] &&
@@ -516,10 +521,11 @@ service cloud.firestore {
                         isGroupManager(groupId) &&
                         incoming().adminId == existing().adminId
                       ) ||
-                      // Tier 3: Atomic self-join via verified active group code_auto invite
+                      // Tier 3: Atomic self-join via verified active, non-expired group code_auto invite
                       (
                         (!('joinPolicy' in existing()) || existing().joinPolicy == 'code_auto') &&
                         (!('inviteRevoked' in existing()) || existing().inviteRevoked != true) &&
+                        (!('inviteExpiresAtMs' in existing()) || request.time.toMillis() < existing().inviteExpiresAtMs) &&
                         (!('status' in existing()) || existing().status == 'active') &&
                         incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberCount', 'updatedAt']) &&
                         ('memberUids' in incoming()) &&
@@ -538,6 +544,20 @@ service cloud.firestore {
                         getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.userId == request.auth.uid &&
                         getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.roleInGroup == 'member' &&
                         getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed == existing().joinCode
+                      ) ||
+                      // Tier 4: Voluntary self-leave by non-admin active member (preserves group & ledger records)
+                      (
+                        existing().adminId != request.auth.uid &&
+                        incoming().adminId == existing().adminId &&
+                        ('memberUids' in existing()) &&
+                        request.auth.uid in existing().memberUids &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberCount', 'treasurerId', 'updatedAt']) &&
+                        ('memberUids' in incoming()) &&
+                        !(request.auth.uid in incoming().memberUids) &&
+                        incoming().memberUids.size() == existing().memberUids.size() - 1 &&
+                        existing().memberUids.hasAll(incoming().memberUids) &&
+                        (!('memberCount' in existing()) || incoming().memberCount == existing().memberCount - 1 || incoming().memberCount == 0) &&
+                        (!('treasurerId' in incoming()) || incoming().treasurerId != request.auth.uid)
                       )
                     );
       allow delete: if isValidId(groupId) && isVerifiedAccount() && existing().adminId == request.auth.uid;
@@ -558,7 +578,11 @@ service cloud.firestore {
                       incoming().status == 'pending' &&
                       exists(/databases/$(database)/documents/groupInvites/$(incoming().inviteCode)) &&
                       get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCode)).data.groupId == groupId &&
-                      get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCode)).data.revoked == false;
+                      get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCode)).data.revoked == false &&
+                      (
+                        !('expiresAtMs' in get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCode)).data) ||
+                        request.time.toMillis() < get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCode)).data.expiresAtMs
+                      );
         allow update: if isValidId(groupId) && isValidId(requestId) && isGroupManager(groupId) &&
                       isValidJoinRequest(incoming()) &&
                       incoming().id == existing().id &&
@@ -591,6 +615,7 @@ service cloud.firestore {
                           groupExists(groupId) &&
                           (!('joinPolicy' in groupDoc(groupId)) || groupDoc(groupId).joinPolicy == 'code_auto') &&
                           (!('inviteRevoked' in groupDoc(groupId)) || groupDoc(groupId).inviteRevoked != true) &&
+                          (!('inviteExpiresAtMs' in groupDoc(groupId)) || request.time.toMillis() < groupDoc(groupId).inviteExpiresAtMs) &&
                           (!('status' in groupDoc(groupId)) || groupDoc(groupId).status == 'active') &&
                           incoming().inviteCodeUsed == groupDoc(groupId).joinCode &&
                           request.auth.uid in getAfter(/databases/$(database)/documents/groups/$(groupId)).data.memberUids
@@ -605,6 +630,18 @@ service cloud.firestore {
                           isGroupManager(groupId) &&
                           existing().roleInGroup != 'admin' &&
                           incoming().roleInGroup in ['treasurer', 'member']
+                        ) ||
+                        (
+                          isActiveGroupMember(groupId) &&
+                          (
+                            memberId == request.auth.uid ||
+                            existing().userId == request.auth.uid ||
+                            ('linkedUserId' in existing() && existing().linkedUserId == request.auth.uid)
+                          ) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'departedAt', 'departureReason', 'updatedAt']) &&
+                          incoming().status == 'departed' &&
+                          !(request.auth.uid in getAfter(/databases/$(database)/documents/groups/$(groupId)).data.memberUids) &&
+                          getAfter(/databases/$(database)/documents/groups/$(groupId)).data.adminId != request.auth.uid
                         )
                       );
         allow delete: if false; // Preserve member directory & ledger integrity via soft status

@@ -34,6 +34,8 @@
         "joinCode": { "type": "string", "maxLength": 50 },
         "joinPolicy": { "type": "string", "enum": ["code_auto", "admin_approval"] },
         "inviteRevoked": { "type": "boolean" },
+        "inviteExpiresAt": { "type": "string", "format": "date-time" },
+        "inviteExpiresAtMs": { "type": "number" },
         "status": { "type": "string", "enum": ["active", "archived"] },
         "archivedAt": { "type": "string", "format": "date-time" },
         "archivedBy": { "type": "string", "maxLength": 128 },
@@ -56,6 +58,8 @@
         "joinPolicy": { "type": "string", "enum": ["code_auto", "admin_approval"] },
         "revoked": { "type": "boolean" },
         "adminId": { "type": "string", "maxLength": 128 },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "expiresAtMs": { "type": "number" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -240,6 +244,7 @@
       "properties": {
         "id": { "type": "string", "maxLength": 128 },
         "commitmentId": { "type": "string", "maxLength": 128 },
+        "groupId": { "type": "string", "maxLength": 128 },
         "memberUid": { "type": "string", "maxLength": 128 },
         "date": { "type": "string", "format": "date-time" },
         "eventType": { "type": "string", "enum": ["created", "reminder_sent", "extension_requested", "extension_approved", "extension_declined", "extension_granted", "partial_payment", "completed", "broken", "revised"] },

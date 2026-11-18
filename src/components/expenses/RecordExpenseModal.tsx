@@ -40,6 +40,7 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'uploaded' | 'error'>('idle');
   const [error, setError] = useState<string>('');
   const [success, setSuccess] = useState<boolean>(false);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -60,7 +61,7 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentGroup || !currentUser) return;
+    if (!currentGroup || !currentUser || isSubmitting) return;
     setError('');
 
     if (uploadStatus === 'uploading') {
@@ -84,6 +85,7 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
       return;
     }
 
+    setIsSubmitting(true);
     const isoDate = expenseDate ? new Date(expenseDate).toISOString() : new Date().toISOString();
 
     const result = recordExpense({
@@ -104,6 +106,7 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
       receiptFileSize: uploadedReceipt?.fileSize,
     });
 
+    setIsSubmitting(false);
     if (!result.success) {
       setError(result.error || 'Could not save expense.');
       return;
@@ -314,11 +317,17 @@ export const RecordExpenseModal: React.FC<RecordExpenseModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={uploadStatus === 'uploading'}
+              disabled={uploadStatus === 'uploading' || isSubmitting}
               className="min-h-[44px] bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 text-white px-5 py-2 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
             >
               <Plus className="w-4 h-4" />
-              <span>{uploadStatus === 'uploading' ? 'Uploading receipt...' : 'Save Expense'}</span>
+              <span>
+                {uploadStatus === 'uploading'
+                  ? 'Uploading receipt...'
+                  : isSubmitting
+                    ? 'Saving...'
+                    : 'Save Expense'}
+              </span>
             </button>
           </div>
         </form>

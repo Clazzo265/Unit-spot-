@@ -221,7 +221,7 @@ export const EXPENSE_CATEGORY_LABELS: Record<ExpenseCategory, string> = {
   rent: 'Rent',
   internet: 'Internet / Wi-Fi',
   groceries: 'Groceries / Food',
-  waste: 'Cleaning / Waste',
+  waste: 'Cleaning',
   maintenance: 'Maintenance / Repairs',
   transport: 'Transport / Fuel',
   school: 'School-related expenses',

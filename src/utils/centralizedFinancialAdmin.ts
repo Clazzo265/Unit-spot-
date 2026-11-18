@@ -15,7 +15,7 @@ import {
 import { formatMWK, calculateVerifiedPaidForAssignment } from './financialCalculations';
 import { toSafeIntMWK } from './financialConfig';
 
-export type EffectiveGroupRole = 'super_admin' | 'admin' | 'treasurer' | 'member';
+export type EffectiveGroupRole = 'admin' | 'treasurer' | 'member';
 
 /**
  * Validates email format with standard regex
@@ -56,30 +56,24 @@ export function generateMemberReferenceId(_groupId: string, membersInGroupCount:
 }
 
 /**
- * Resolve a user's effective role inside a specific group.
- * Prevents global admin assumption when a user is an ordinary member of someone else's group.
+ * Resolve a user's effective role inside a specific group strictly by Firebase UID.
+ * Zero global privilege assumptions and zero email-based role escalation.
  */
 export function getEffectiveGroupRole(
   user: Pick<Administrator, 'id' | 'email' | 'role'> | null | undefined,
   group: Pick<Group, 'id' | 'adminId' | 'treasurerId'> | null | undefined,
   groupMembers: GroupMember[] = []
 ): EffectiveGroupRole {
-  if (!user) return 'member';
-  if (!group) return user.role === 'group_admin' || user.role === 'super_admin' ? 'admin' : 'member';
+  if (!user || !group) return 'member';
 
   if (group.adminId === user.id) return 'admin';
   if (group.treasurerId === user.id) return 'treasurer';
 
-  const normalizedEmail = (user.email || '').trim().toLowerCase();
   const membership = groupMembers.find(
     (m) =>
       m.groupId === group.id &&
-      m.status !== 'removed' &&
-      m.status !== 'departed' &&
-      (m.userId === user.id ||
-        m.linkedUserId === user.id ||
-        m.id === user.id ||
-        (normalizedEmail && (m.email || '').trim().toLowerCase() === normalizedEmail))
+      m.status === 'active' &&
+      (m.linkedUserId === user.id || m.userId === user.id || m.id === user.id)
   );
 
   if (membership?.roleInGroup === 'admin') return 'admin';
@@ -88,11 +82,11 @@ export function getEffectiveGroupRole(
 }
 
 export function canManageGroupRole(role: EffectiveGroupRole | AdministratorRole | undefined): boolean {
-  return role === 'super_admin' || role === 'admin' || role === 'group_admin';
+  return role === 'admin' || role === 'group_admin';
 }
 
 export function canVerifyPaymentsRole(role: EffectiveGroupRole | AdministratorRole | undefined): boolean {
-  return role === 'super_admin' || role === 'admin' || role === 'group_admin' || role === 'treasurer';
+  return role === 'admin' || role === 'group_admin' || role === 'treasurer';
 }
 
 /**
@@ -134,19 +128,134 @@ export function resolveMemberForUser(
  * Role-based permission checks for administrative & financial mutations
  */
 export function canUserManageGroup(role: AdministratorRole | undefined): boolean {
-  return role === 'super_admin' || role === 'group_admin';
+  return role === 'group_admin';
 }
 
 export function canUserVerifyPayments(role: AdministratorRole | undefined): boolean {
-  return role === 'super_admin' || role === 'group_admin' || role === 'treasurer';
+  return role === 'group_admin' || role === 'treasurer';
 }
 
 export function canUserReversePayments(role: AdministratorRole | undefined): boolean {
-  return role === 'super_admin' || role === 'group_admin';
+  return role === 'group_admin';
 }
 
 export function canUserApproveExpenses(role: AdministratorRole | undefined): boolean {
-  return role === 'super_admin' || role === 'group_admin';
+  return role === 'group_admin';
+}
+
+/**
+ * Validates whether a user can voluntarily leave a group, enforcing sole-admin handover guard.
+ */
+export function validateLeaveGroupEligibility(params: {
+  userId: string;
+  group: Pick<Group, 'id' | 'adminId' | 'treasurerId' | 'memberUids' | 'status'> | undefined;
+  groupMembers: GroupMember[];
+  transferToMemberId?: string;
+}): {
+  allowed: boolean;
+  error?: string;
+  requiresTransfer?: boolean;
+  departingMember?: GroupMember;
+  nextAdminMember?: GroupMember;
+  otherActiveMembers: GroupMember[];
+} {
+  const { userId, group, groupMembers, transferToMemberId } = params;
+  if (!userId || !group) {
+    return { allowed: false, error: 'Group not found.', otherActiveMembers: [] };
+  }
+
+  const activeInGroup = groupMembers.filter(
+    (m) => m.groupId === group.id && m.status === 'active'
+  );
+  const departingMember = activeInGroup.find(
+    (m) => m.linkedUserId === userId || m.userId === userId || m.id === userId
+  );
+  const otherActiveMembers = activeInGroup.filter((m) => {
+    const uid = m.linkedUserId || (!m.userId.startsWith('mem_') ? m.userId : m.id);
+    return m.id !== departingMember?.id && uid !== userId;
+  });
+
+  const isMemberByGroupField =
+    group.adminId === userId ||
+    group.treasurerId === userId ||
+    (Array.isArray(group.memberUids) && group.memberUids.includes(userId));
+
+  if (!departingMember && !isMemberByGroupField) {
+    return {
+      allowed: false,
+      error: 'You are not an active member of this group.',
+      otherActiveMembers,
+    };
+  }
+
+  const otherActiveAdmins = otherActiveMembers.filter((m) => m.roleInGroup === 'admin');
+  const isSolePrimaryAdmin = group.adminId === userId && otherActiveAdmins.length === 0;
+
+  if (isSolePrimaryAdmin) {
+    if (!transferToMemberId) {
+      if (otherActiveMembers.length === 0) {
+        return {
+          allowed: false,
+          requiresTransfer: true,
+          error:
+            'You are the only active member and administrator of this group. Archive the group instead of leaving.',
+          departingMember,
+          otherActiveMembers,
+        };
+      }
+      return {
+        allowed: false,
+        requiresTransfer: true,
+        error:
+          'You are the sole group administrator. Select an active member to receive admin ownership before leaving.',
+        departingMember,
+        otherActiveMembers,
+      };
+    }
+
+    const successor = otherActiveMembers.find(
+      (m) => m.id === transferToMemberId || m.userId === transferToMemberId || m.linkedUserId === transferToMemberId
+    );
+    if (!successor) {
+      return {
+        allowed: false,
+        requiresTransfer: true,
+        error: 'Selected new administrator must be an active member of this group.',
+        departingMember,
+        otherActiveMembers,
+      };
+    }
+
+    const successorUid = successor.linkedUserId || successor.userId;
+    if (!successorUid || successorUid.startsWith('mem_')) {
+      return {
+        allowed: false,
+        requiresTransfer: true,
+        error:
+          'Selected member has not signed in to an account yet. Choose a member who has joined the app, or ask them to sign in first.',
+        departingMember,
+        otherActiveMembers,
+      };
+    }
+
+    return {
+      allowed: true,
+      departingMember,
+      nextAdminMember: successor,
+      otherActiveMembers,
+    };
+  }
+
+  // Group has another active admin if current admin is stepping away
+  const fallbackNextAdmin =
+    group.adminId === userId ? otherActiveAdmins[0] : undefined;
+
+  return {
+    allowed: true,
+    departingMember,
+    nextAdminMember: fallbackNextAdmin,
+    otherActiveMembers,
+  };
 }
 
 /**

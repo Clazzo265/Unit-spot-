@@ -324,8 +324,15 @@ describe('UNIT SPOT Security Remediation — User Data Isolation & Access Contro
     assert.match(firestoreRules, /match\s+\/payments\/\{paymentId\}[\s\S]*?resource\.data\.memberUid\s*==\s*request\.auth\.uid/);
     assert.match(firestoreRules, /match\s+\/disputes\/\{disputeId\}[\s\S]*?resource\.data\.memberUid\s*==\s*request\.auth\.uid/);
 
-    // Invite join code verification on atomic join
+    // Invite join code & expiration verification on atomic join
     assert.match(firestoreRules, /inviteCodeUsed\s*==\s*existing\(\)\.joinCode/);
+    assert.match(firestoreRules, /inviteExpiresAtMs/);
+    assert.match(firestoreRules, /expiresAtMs/);
+    assert.match(firestoreRules, /request\.time\.toMillis\(\)\s*</);
+
+    // Tier 4 voluntary self-leave enforcement on group & member documents
+    assert.match(firestoreRules, /status\s*==\s*'departed'/);
+    assert.match(firestoreRules, /existing\(\)\.adminId\s*!=\s*request\.auth\.uid/);
 
     // Storage rules UID-scoped receipt paths and verification
     assert.match(storageRules, /match\s+\/receipts\/\{groupId\}\/\{userId\}\/\{fileName\}/);

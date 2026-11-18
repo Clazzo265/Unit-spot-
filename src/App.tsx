@@ -953,7 +953,10 @@ export default function App() {
             )}
 
             {currentTab === 'groups' && (
-              <GroupManagementView onOpenJoinGroup={() => setIsJoinModalOpen(true)} />
+              <GroupManagementView
+                onOpenJoinGroup={() => setIsJoinModalOpen(true)}
+                onNavigateDashboard={() => selectTab('dashboard')}
+              />
             )}
 
             {currentTab === 'reports' && <FinancialReportingView />}

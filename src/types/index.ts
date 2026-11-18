@@ -178,6 +178,8 @@ export interface Group {
   joinCode: string;
   joinPolicy?: GroupJoinPolicy;
   inviteRevoked?: boolean;
+  inviteExpiresAt?: string;
+  inviteExpiresAtMs?: number;
   status?: 'active' | 'archived';
   archivedAt?: string;
   archivedBy?: string;
@@ -195,6 +197,8 @@ export interface GroupInvite {
   joinPolicy: GroupJoinPolicy;
   revoked: boolean;
   adminId: string;
+  expiresAt?: string;
+  expiresAtMs?: number;
   createdAt: string;
   updatedAt?: string;
 }
@@ -313,6 +317,7 @@ export interface PaymentCommitment {
 export interface CommitmentEvent {
   id: string;
   commitmentId: string;
+  groupId?: string;
   memberUid?: string;
   date: string;
   eventType:
@@ -384,7 +389,7 @@ export interface AppNotification {
   groupId?: string;
   title: string;
   message: string;
-  category: 'payment' | 'commitment' | 'expense' | 'dispute' | 'announcement';
+  category: 'payment' | 'commitment' | 'deadline' | 'expense' | 'dispute' | 'announcement';
   read: boolean;
   createdAt: string;
   linkTab?: string;

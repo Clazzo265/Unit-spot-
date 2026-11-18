@@ -48,6 +48,8 @@ import {
   formatDeadlineLabel,
   generateJoinCode,
   extractInviteCodeFromUrl,
+  createInviteExpiry,
+  isInviteExpired,
 } from '../utils/financialConfig';
 import {
   validateEmailAddress,
@@ -59,6 +61,7 @@ import {
   canManageGroupRole,
   canVerifyPaymentsRole,
   resolveMemberForUser,
+  validateLeaveGroupEligibility,
   EffectiveGroupRole,
 } from '../utils/centralizedFinancialAdmin';
 import {
@@ -102,6 +105,7 @@ import {
   arrayUnion,
   arrayRemove,
   increment,
+  deleteField,
   writeBatch,
 } from 'firebase/firestore';
 
@@ -220,6 +224,10 @@ interface AppContextType {
   ) => ActionResult;
   archiveGroup: (groupId: string, reason: string) => ActionResult;
   transferGroupOwnership: (groupId: string, newAdminMemberId: string, reason: string) => ActionResult;
+  leaveGroup: (
+    groupId: string,
+    options?: { transferToMemberId?: string; reason?: string }
+  ) => Promise<ActionResult & { code?: string }>;
   lookupInviteByCode: (code: string) => Promise<ActionResult<GroupInvite>>;
   joinGroupByCode: (code: string) => Promise<ActionResult<{ groupId: string; groupName: string; status: 'joined' | 'pending_approval' }>>;
   approveJoinRequest: (groupId: string, requestId: string, approved: boolean) => Promise<ActionResult>;
@@ -619,7 +627,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         name: fbUser.displayName || fbUser.email?.split('@')[0] || 'User',
         email: fbUser.email || '',
         phone: fbUser.phoneNumber || undefined,
-        role: 'group_admin',
+        role: 'member',
         avatarUrl: fbUser.photoURL || undefined,
         preferredLanguage: languageRef.current,
         createdAt: new Date().toISOString(),
@@ -722,6 +730,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setAssignments((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
       setPayments((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
       setCommitments((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
+      setCommitmentEvents((prev) =>
+        prev.filter((item) => !item.groupId || validGroupIds.has(item.groupId))
+      );
       setExpenses((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
       setDisputes((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
       setJoinRequests((prev) => prev.filter((item) => validGroupIds.has(item.groupId)));
@@ -933,8 +944,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             (snapshot) => {
               if (activeUidRef.current !== uid) return;
               const items: CommitmentEvent[] = [];
-              snapshot.forEach((d) => items.push(d.data() as CommitmentEvent));
-              setCommitmentEvents((prev) => mergeItemsById(prev, items));
+              snapshot.forEach((d) => {
+                const ev = d.data() as CommitmentEvent;
+                items.push({ ...ev, groupId: ev.groupId || groupId });
+              });
+              setCommitmentEvents((prev) => {
+                const scopedPrev = prev.filter((e) => e.groupId && e.groupId !== groupId);
+                return mergeItemsById(scopedPrev, items);
+              });
             },
             (err) => console.warn(`groups/${groupId}/commitmentEvents snapshot error:`, err)
           )
@@ -1007,8 +1024,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             (snapshot) => {
               if (activeUidRef.current !== uid) return;
               const items: CommitmentEvent[] = [];
-              snapshot.forEach((d) => items.push(d.data() as CommitmentEvent));
-              setCommitmentEvents(items);
+              snapshot.forEach((d) => {
+                const ev = d.data() as CommitmentEvent;
+                items.push({ ...ev, groupId: ev.groupId || groupId });
+              });
+              setCommitmentEvents((prev) => [
+                ...prev.filter((e) => e.groupId && e.groupId !== groupId),
+                ...items,
+              ]);
             },
             (err) => console.warn(`groups/${groupId}/commitmentEvents (self) snapshot error:`, err)
           )
@@ -1307,6 +1330,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       category: AppNotification['category'],
       explicitGroupId?: string
     ) => {
+      if (category === 'payment' && !notificationConfig.autoPaymentConfirmations) return;
+      if (category === 'announcement' && !notificationConfig.autoObligationNotice) return;
+      if (category === 'deadline' && !notificationConfig.autoUpcomingDeadlines) return;
+
       const resolvedUid = resolveMemberUid(userId, explicitGroupId || currentGroup?.id) || userId;
       const newNotif: AppNotification = {
         id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
@@ -1332,7 +1359,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         );
       }
     },
-    [currentGroup?.id, currentUser?.id, firebaseAuthUser, resolveMemberUid, syncToFirestore]
+    [
+      currentGroup?.id,
+      currentUser?.id,
+      firebaseAuthUser,
+      notificationConfig.autoObligationNotice,
+      notificationConfig.autoPaymentConfirmations,
+      notificationConfig.autoUpcomingDeadlines,
+      resolveMemberUid,
+      syncToFirestore,
+    ]
   );
 
   // Recalculate assignment status & active commitment from authoritative payment list
@@ -1598,6 +1634,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const event: CommitmentEvent = {
         id: `cev_${Date.now()}`,
         commitmentId: activeCommitment.id,
+        groupId: targetAssignment.groupId,
         memberUid: resolvedMemberUid,
         date: nowIso,
         eventType: newOutstanding <= 0 ? 'completed' : 'partial_payment',
@@ -1958,6 +1995,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const event: CommitmentEvent = {
       id: `cev_${Date.now()}`,
       commitmentId,
+      groupId: assignment.groupId,
       memberUid: resolvedMemberUid,
       date: nowIso,
       eventType: 'created',
@@ -2021,6 +2059,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const event: CommitmentEvent = {
       id: `cev_${Date.now()}`,
       commitmentId,
+      groupId: commitment.groupId,
       memberUid:
         commitment.memberUid ||
         resolveMemberUid(commitment.memberId, commitment.groupId) ||
@@ -2080,6 +2119,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const event: CommitmentEvent = {
       id: `cev_${Date.now()}`,
       commitmentId,
+      groupId: commitment.groupId,
       memberUid:
         commitment.memberUid || resolveMemberUid(commitment.memberId, commitment.groupId),
       date: new Date().toISOString(),
@@ -2354,6 +2394,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const randomCode = generateJoinCode('US');
     const nowIso = new Date().toISOString();
     const joinPolicy: GroupJoinPolicy = groupData.joinPolicy || 'code_auto';
+    const expiry = createInviteExpiry();
 
     const newGroup: Group = {
       ...groupData,
@@ -2365,6 +2406,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       joinCode: randomCode,
       joinPolicy,
       inviteRevoked: false,
+      inviteExpiresAt: expiry.expiresAt,
+      inviteExpiresAtMs: expiry.expiresAtMs,
       status: 'active',
       createdAt: nowIso,
       updatedAt: nowIso,
@@ -2384,7 +2427,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       phone: currentUser.phone,
       memberRefId: 'MEM-ADMIN-001',
       roleInGroup: 'admin',
-      stoveType: isAccommodationGroup(newGroup) ? 'electric' : undefined,
       joinedAt: nowIso,
       createdAt: nowIso,
       updatedAt: nowIso,
@@ -2401,6 +2443,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       joinPolicy,
       revoked: false,
       adminId: currentUser.id,
+      expiresAt: expiry.expiresAt,
+      expiresAtMs: expiry.expiresAtMs,
       createdAt: nowIso,
       updatedAt: nowIso,
     };
@@ -2481,6 +2525,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         joinPolicy: nextGroup.joinPolicy || 'code_auto',
         revoked: Boolean(nextGroup.inviteRevoked),
         adminId: nextGroup.adminId,
+        expiresAt: nextGroup.inviteExpiresAt,
+        expiresAtMs: nextGroup.inviteExpiresAtMs,
         createdAt: nextGroup.createdAt,
         updatedAt: nowIso,
       });
@@ -2602,6 +2648,164 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { success: true };
   };
 
+  // Voluntary Leave Group (atomically updates membership/group in Firestore, enforces sole-admin handover, purges departing user's view & preserves financial ledger)
+  const leaveGroup: AppContextType['leaveGroup'] = async (groupId, options = {}) => {
+    if (!currentUser) {
+      return { success: false, error: 'Authentication required.' };
+    }
+    const targetGroup = groups.find((g) => g.id === groupId);
+    if (!targetGroup) {
+      return { success: false, error: 'Group not found.' };
+    }
+
+    const uid = firebaseAuthUser?.uid || currentUser.id;
+    const eligibility = validateLeaveGroupEligibility({
+      userId: uid,
+      group: targetGroup,
+      groupMembers,
+      transferToMemberId: options.transferToMemberId,
+    });
+
+    if (!eligibility.allowed) {
+      return {
+        success: false,
+        error: eligibility.error || 'Cannot leave this group right now.',
+        code: eligibility.requiresTransfer ? 'TRANSFER_REQUIRED' : 'LEAVE_BLOCKED',
+      };
+    }
+
+    const nowIso = new Date().toISOString();
+    const reason = options.reason?.trim() || 'Voluntary departure by member';
+    const nextAdminUid = eligibility.nextAdminMember
+      ? eligibility.nextAdminMember.linkedUserId || eligibility.nextAdminMember.userId
+      : undefined;
+    const currentUids = Array.isArray(targetGroup.memberUids)
+      ? targetGroup.memberUids
+      : [targetGroup.adminId];
+    const remainingUids = currentUids.filter((u) => u !== uid);
+    const nextCount = Math.max(0, remainingUids.length);
+    const wasTreasurer = targetGroup.treasurerId === uid;
+    const adminTransferNeeded = targetGroup.adminId === uid && Boolean(nextAdminUid);
+
+    if (firebaseAuthUser && firebaseAuthUser.emailVerified && activeUidRef.current === uid) {
+      try {
+        const batch = writeBatch(db);
+
+        if (adminTransferNeeded && eligibility.nextAdminMember && nextAdminUid) {
+          batch.update(
+            doc(db, `groups/${groupId}/members`, eligibility.nextAdminMember.id),
+            sanitizeForFirestore({
+              roleInGroup: 'admin',
+              updatedAt: nowIso,
+            })
+          );
+        }
+
+        if (eligibility.departingMember) {
+          batch.update(
+            doc(db, `groups/${groupId}/members`, eligibility.departingMember.id),
+            sanitizeForFirestore({
+              status: 'departed',
+              departedAt: nowIso,
+              departureReason: reason,
+              updatedAt: nowIso,
+            })
+          );
+        }
+
+        const groupUpdatePayload: Record<string, unknown> = {
+          memberUids: arrayRemove(uid),
+          memberCount: nextCount,
+          updatedAt: nowIso,
+        };
+        if (adminTransferNeeded && nextAdminUid) {
+          groupUpdatePayload.adminId = nextAdminUid;
+        }
+        if (wasTreasurer) {
+          groupUpdatePayload.treasurerId = deleteField();
+        }
+        batch.update(doc(db, 'groups', groupId), groupUpdatePayload);
+
+        const leaveLogId = `aud_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        const leaveLog: AuditLog = {
+          id: leaveLogId,
+          groupId,
+          actorId: uid,
+          actorName: currentUser.name,
+          action: 'MEMBER_LEFT_GROUP',
+          targetEntity: 'member',
+          targetId: eligibility.departingMember?.id || uid,
+          reason,
+          beforeValue: eligibility.departingMember?.status || 'active',
+          afterValue: 'departed',
+          details: adminTransferNeeded && eligibility.nextAdminMember
+            ? `${currentUser.name} transferred admin ownership to ${eligibility.nextAdminMember.name} and left "${targetGroup.name}". Financial records preserved.`
+            : `${currentUser.name} voluntarily left "${targetGroup.name}". Historical payments and ledger preserved.`,
+          timestamp: nowIso,
+          securityEvent: true,
+        };
+        batch.set(
+          doc(db, `groups/${groupId}/auditLogs`, leaveLogId),
+          sanitizeForFirestore(leaveLog as unknown as Record<string, unknown>)
+        );
+
+        const recipientAdminId = nextAdminUid || targetGroup.adminId;
+        if (recipientAdminId && recipientAdminId !== uid && !recipientAdminId.startsWith('mem_')) {
+          const notifId = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`;
+          const leaveNotif: AppNotification = {
+            id: notifId,
+            userId: recipientAdminId,
+            senderId: uid,
+            groupId,
+            title: adminTransferNeeded ? 'Group Ownership Transferred' : 'Member Left Group',
+            message: adminTransferNeeded
+              ? `${currentUser.name} transferred admin ownership of "${targetGroup.name}" to you before leaving.`
+              : `${currentUser.name} has left "${targetGroup.name}". All payment records remain preserved.`,
+            category: 'announcement',
+            read: false,
+            createdAt: nowIso,
+          };
+          batch.set(
+            doc(db, `users/${recipientAdminId}/notifications`, notifId),
+            sanitizeForFirestore(leaveNotif as unknown as Record<string, unknown>)
+          );
+        }
+
+        await batch.commit();
+        if (activeUidRef.current !== uid) {
+          return { success: false, error: 'Session changed while leaving group.' };
+        }
+      } catch (err) {
+        console.warn('Leave group batch failed:', err);
+        return {
+          success: false,
+          error: 'Could not complete leaving this group right now. Check your connection and try again.',
+        };
+      }
+    }
+
+    // Immediately remove group & group-scoped state from the departing user's session
+    const nextGroups = groups.filter((g) => g.id !== groupId);
+    setGroups(nextGroups);
+    if (currentGroup?.id === groupId) {
+      setCurrentGroup(nextGroups.find((g) => g.status !== 'archived') || null);
+    }
+    setGroupMembers((prev) => prev.filter((item) => item.groupId !== groupId));
+    setContributions((prev) => prev.filter((item) => item.groupId !== groupId));
+    setAssignments((prev) => prev.filter((item) => item.groupId !== groupId));
+    setPayments((prev) => prev.filter((item) => item.groupId !== groupId));
+    setCommitments((prev) => prev.filter((item) => item.groupId !== groupId));
+    setCommitmentEvents((prev) => prev.filter((item) => item.groupId !== groupId));
+    setExpenses((prev) => prev.filter((item) => item.groupId !== groupId));
+    setDisputes((prev) => prev.filter((item) => item.groupId !== groupId));
+    setJoinRequests((prev) => prev.filter((item) => item.groupId !== groupId));
+    setAuditLogs((prev) => prev.filter((item) => item.groupId !== groupId));
+    setCommunications((prev) => prev.filter((item) => item.groupId !== groupId));
+    setNotifications((prev) => prev.filter((n) => n.groupId !== groupId));
+
+    return { success: true };
+  };
+
   // Invite Lookup by Code
   const lookupInviteByCode: AppContextType['lookupInviteByCode'] = async (code) => {
     const cleanCode = (code || '').trim().toUpperCase();
@@ -2617,6 +2821,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (localMatch.inviteRevoked) {
         return { success: false, error: 'This invite code has been disabled by the group administrator.' };
       }
+      if (isInviteExpired(localMatch.inviteExpiresAt, localMatch.inviteExpiresAtMs)) {
+        return { success: false, error: 'This invite code has expired. Ask your group administrator for a new code.' };
+      }
       return {
         success: true,
         data: {
@@ -2627,6 +2834,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           joinPolicy: localMatch.joinPolicy || 'code_auto',
           revoked: Boolean(localMatch.inviteRevoked),
           adminId: localMatch.adminId,
+          expiresAt: localMatch.inviteExpiresAt,
+          expiresAtMs: localMatch.inviteExpiresAtMs,
           createdAt: localMatch.createdAt,
         },
       };
@@ -2644,6 +2853,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const invite = snap.data() as GroupInvite;
       if (invite.revoked) {
         return { success: false, error: 'This invite link is no longer active. Ask your admin for a new code.' };
+      }
+      if (isInviteExpired(invite.expiresAt, invite.expiresAtMs)) {
+        return { success: false, error: 'This invite link has expired. Ask your admin to generate a fresh code.' };
       }
       return { success: true, data: invite };
     } catch (err) {
@@ -2918,12 +3130,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const nextCode = options.regenerate ? generateJoinCode('US') : oldCode;
     const nextRevoked = typeof options.revoke === 'boolean' ? options.revoke : Boolean(targetGroup.inviteRevoked);
     const nextPolicy = options.joinPolicy || targetGroup.joinPolicy || 'code_auto';
+    const shouldRefreshExpiry =
+      Boolean(options.regenerate) || options.revoke === false || !targetGroup.inviteExpiresAtMs;
+    const expiry = shouldRefreshExpiry
+      ? createInviteExpiry()
+      : {
+          expiresAt: targetGroup.inviteExpiresAt,
+          expiresAtMs: targetGroup.inviteExpiresAtMs,
+        };
 
     const nextGroup: Group = {
       ...targetGroup,
       joinCode: nextCode,
       joinPolicy: nextPolicy,
       inviteRevoked: options.regenerate ? false : nextRevoked,
+      inviteExpiresAt: expiry.expiresAt,
+      inviteExpiresAtMs: expiry.expiresAtMs,
       updatedAt: nowIso,
     };
 
@@ -2941,6 +3163,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         joinPolicy: nextPolicy,
         revoked: true,
         adminId: nextGroup.adminId,
+        expiresAt: targetGroup.inviteExpiresAt,
+        expiresAtMs: targetGroup.inviteExpiresAtMs,
         createdAt: nextGroup.createdAt,
         updatedAt: nowIso,
       });
@@ -2954,6 +3178,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       joinPolicy: nextPolicy,
       revoked: Boolean(nextGroup.inviteRevoked),
       adminId: nextGroup.adminId,
+      expiresAt: expiry.expiresAt,
+      expiresAtMs: expiry.expiresAtMs,
       createdAt: nowIso,
       updatedAt: nowIso,
     });
@@ -3831,6 +4057,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateGroup,
         archiveGroup,
         transferGroupOwnership,
+        leaveGroup,
         lookupInviteByCode,
         joinGroupByCode,
         approveJoinRequest,
