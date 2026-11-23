@@ -1789,79 +1789,35 @@ export const GroupManagementView: React.FC<{
         isOpen={Boolean(postCreatedGroup)}
         onClose={() => setPostCreateGroupId(null)}
         title={postCreatedGroup ? `Group Ready — ${postCreatedGroup.name}` : 'Group Created'}
-        subtitle="Your group is ready. Share one invitation with members so they can join."
+        subtitle="Your group is ready to use."
       >
-        {postCreatedGroup && (
-          <div className="space-y-4 text-xs">
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                  Group Invite Code
-                </span>
-                {postCreatedGroup.inviteExpiresAt && (
-                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Valid until {new Date(postCreatedGroup.inviteExpiresAt).toLocaleDateString()}
-                  </span>
-                )}
-              </div>
-              <div className="font-mono text-lg font-extrabold text-slate-900 dark:text-white tracking-wider">
-                {postCreatedGroup.joinCode}
-              </div>
-              <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 break-all">
-                {buildInviteUrl(postCreatedGroup.joinCode)}
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => handleShareInviteLink(postCreatedGroup)}
-                className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold cursor-pointer"
-              >
-                <Share2 className="w-3.5 h-3.5" />
-                <span>Share Link</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleCopy(postCreatedGroup.joinCode)}
-                className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 font-semibold cursor-pointer"
-              >
-                <Copy className="w-3.5 h-3.5" />
-                <span>{copiedCode === postCreatedGroup.joinCode ? 'Copied!' : 'Copy Code'}</span>
-              </button>
-            </div>
-
-            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 self-center">
-                  You can add roster members from the group directory.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPostCreateGroupId(null);
-                    openEditGroup();
-                  }}
-                  className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-[#131D33] text-slate-800 dark:text-slate-200 font-semibold cursor-pointer"
-                >
-                  <Edit3 className="w-3.5 h-3.5" />
-                  <span>Group Settings</span>
-                </button>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setPostCreateGroupId(null);
-                  onNavigateDashboard?.();
-                }}
-                className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-slate-900 dark:bg-blue-600 text-white font-bold cursor-pointer"
-              >
-                <LayoutDashboard className="w-3.5 h-3.5" />
-                <span>Go to Dashboard</span>
-              </button>
-            </div>
+        <div className="space-y-4 text-sm">
+          <div className="rounded-2xl border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50 dark:bg-emerald-950/30 p-4">
+            <div className="font-bold text-emerald-900 dark:text-emerald-200">Your group has been created successfully.</div>
+            <p className="mt-1 text-xs leading-relaxed text-emerald-800 dark:text-emerald-300">
+              You can add people to the group roster and share the invitation from the Group Members page. Members must sign in with their own accounts to access private group information.
+            </p>
           </div>
-        )}
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setPostCreateGroupId(null);
+                onNavigateDashboard?.();
+              }}
+              className="min-h-[44px] px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-semibold cursor-pointer"
+            >
+              Go to Dashboard
+            </button>
+            <button
+              type="button"
+              onClick={() => setPostCreateGroupId(null)}
+              className="min-h-[44px] px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-blue-600 text-white font-bold cursor-pointer"
+            >
+              Continue to Group
+            </button>
+          </div>
+        </div>
       </Modal>
 
       {/* Accommodation-Only Electricity Stove Settings Modal */}
