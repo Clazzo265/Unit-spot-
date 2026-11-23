@@ -1789,7 +1789,7 @@ export const GroupManagementView: React.FC<{
         isOpen={Boolean(postCreatedGroup)}
         onClose={() => setPostCreateGroupId(null)}
         title={postCreatedGroup ? `Group Ready — ${postCreatedGroup.name}` : 'Group Created'}
-        subtitle="Invite members right away with your unique code or link"
+        subtitle="Your group is ready. Share one invitation with members so they can join."
       >
         {postCreatedGroup && (
           <div className="space-y-4 text-xs">
@@ -1815,14 +1815,6 @@ export const GroupManagementView: React.FC<{
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button
                 type="button"
-                onClick={() => handleCopyInviteLink(postCreatedGroup.joinCode)}
-                className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white font-bold cursor-pointer"
-              >
-                <Link2 className="w-3.5 h-3.5" />
-                <span>{copiedInviteUrl ? 'Copied Link' : 'Copy Invite Link'}</span>
-              </button>
-              <button
-                type="button"
                 onClick={() => handleShareInviteLink(postCreatedGroup)}
                 className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold cursor-pointer"
               >
@@ -1841,18 +1833,9 @@ export const GroupManagementView: React.FC<{
 
             <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPostCreateGroupId(null);
-                    setAddMemberError(null);
-                    setIsAddingMember(true);
-                  }}
-                  className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-[#131D33] text-slate-800 dark:text-slate-200 font-semibold cursor-pointer"
-                >
-                  <UserPlus className="w-3.5 h-3.5" />
-                  <span>Add roster member</span>
-                </button>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 self-center">
+                  You can add roster members from the group directory.
+                </p>
                 <button
                   type="button"
                   onClick={() => {
