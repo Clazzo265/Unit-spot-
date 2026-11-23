@@ -122,7 +122,6 @@ export const GroupManagementView: React.FC<{
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberEmail, setNewMemberEmail] = useState('');
   const [newMemberPhone, setNewMemberPhone] = useState('+265 ');
-  const [newMemberRole, setNewMemberRole] = useState<'admin' | 'treasurer' | 'member'>('member');
   const [newMemberRoom, setNewMemberRoom] = useState('');
   const [newMemberNotes, setNewMemberNotes] = useState('');
   const [addMemberError, setAddMemberError] = useState<string | null>(null);
@@ -386,7 +385,7 @@ export const GroupManagementView: React.FC<{
       name: newMemberName.trim(),
       email: newMemberEmail.trim(),
       phone: newMemberPhone.trim(),
-      role: newMemberRole,
+      role: 'member',
       roomNumber: newMemberRoom.trim() || undefined,
       notes: newMemberNotes.trim() || undefined,
     });
@@ -1551,7 +1550,7 @@ export const GroupManagementView: React.FC<{
         isOpen={isAddingMember}
         onClose={() => setIsAddingMember(false)}
         title={`Add Member to ${currentGroup?.name || 'Group'}`}
-        subtitle="Add a member record or share the invite code so they can log in directly"
+        subtitle="Add a roster record, then share the group invite link so they can create or access their own account"
       >
         <form onSubmit={handleAddMember} className="space-y-4 text-xs">
           <div className="bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 rounded-xl p-3 text-slate-700 dark:text-slate-300">
@@ -1559,7 +1558,7 @@ export const GroupManagementView: React.FC<{
               <ShieldCheck className="w-3.5 h-3.5 text-[#D5A52B]" />
               Member Record
             </span>
-            Members added with their email can sign in and see their balance &amp; send payment proofs right away.
+            This creates a group roster record only — it does not create an account or grant access. To use UnitSpot, the person must sign in with their own account and join using your group invite link or code.
           </div>
 
           {addMemberError && (
@@ -1613,22 +1612,11 @@ export const GroupManagementView: React.FC<{
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
-                Role in Group *
-              </label>
-              <select
-                value={newMemberRole}
-                onChange={(e) =>
-                  setNewMemberRole(e.target.value as 'admin' | 'treasurer' | 'member')
-                }
-                className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
-              >
-                <option value="member">Member</option>
-                <option value="treasurer">Treasurer / Collector</option>
-                <option value="admin">Group Admin</option>
-              </select>
+              <div className="font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">Account access</div>
+              <div className="min-h-[44px] flex items-center rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#11192C] px-3 text-xs font-semibold text-slate-700 dark:text-slate-200">Roster only · Member</div>
+              <p className="mt-1 text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">Admin and treasurer access can only be assigned to a linked account.</p>
             </div>
 
             <div>
