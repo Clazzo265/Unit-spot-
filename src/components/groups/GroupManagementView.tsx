@@ -122,7 +122,6 @@ export const GroupManagementView: React.FC<{
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberEmail, setNewMemberEmail] = useState('');
   const [newMemberPhone, setNewMemberPhone] = useState('+265 ');
-  const [newMemberRole, setNewMemberRole] = useState<'admin' | 'treasurer' | 'member'>('member');
   const [newMemberRoom, setNewMemberRoom] = useState('');
   const [newMemberNotes, setNewMemberNotes] = useState('');
   const [addMemberError, setAddMemberError] = useState<string | null>(null);
@@ -386,7 +385,7 @@ export const GroupManagementView: React.FC<{
       name: newMemberName.trim(),
       email: newMemberEmail.trim(),
       phone: newMemberPhone.trim(),
-      role: newMemberRole,
+      role: 'member',
       roomNumber: newMemberRoom.trim() || undefined,
       notes: newMemberNotes.trim() || undefined,
     });
@@ -510,17 +509,6 @@ export const GroupManagementView: React.FC<{
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {onOpenJoinGroup && (
-            <button
-              type="button"
-              onClick={onOpenJoinGroup}
-              className="min-h-[44px] inline-flex items-center justify-center gap-2 bg-white hover:bg-slate-50 dark:bg-[#131D33] dark:hover:bg-[#1A2744] text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 px-4 py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
-            >
-              <Link2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
-              <span>Join with Invite Code</span>
-            </button>
-          )}
-
           <button
             type="button"
             onClick={() => setIsCreating(true)}
@@ -570,8 +558,17 @@ export const GroupManagementView: React.FC<{
             return (
               <div
                 key={g.id}
+                role="button"
+                tabIndex={0}
+                aria-pressed={isSelected}
                 onClick={() => setCurrentGroup(g)}
-                className={`p-5 rounded-2xl border transition-all cursor-pointer relative ${
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setCurrentGroup(g);
+                  }
+                }}
+                className={`p-5 rounded-2xl border transition-all cursor-pointer relative focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 ${
                   isSelected
                     ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-[#131D33] text-white shadow-md ring-1 ring-slate-900 dark:ring-blue-500/60'
                     : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1424] hover:border-slate-300 dark:hover:border-slate-700 text-slate-900 dark:text-slate-100'
@@ -629,26 +626,9 @@ export const GroupManagementView: React.FC<{
                     <span>{membersCount} active members</span>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleCopy(g.joinCode);
-                    }}
-                    className={`min-h-[36px] inline-flex items-center gap-1 font-mono text-[11px] px-2.5 py-1 rounded-lg border cursor-pointer ${
-                      isSelected
-                        ? 'border-white/20 bg-white/10 text-white hover:bg-white/20'
-                        : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#11192C] text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#18233D]'
-                    }`}
-                    title="Click to copy group code"
-                  >
-                    {copiedCode === g.joinCode ? (
-                      <Check className="w-3 h-3 text-emerald-400" />
-                    ) : (
-                      <Copy className="w-3 h-3" />
-                    )}
-                    {g.joinCode}
-                  </button>
+                  <span className={`text-[11px] font-semibold ${isSelected ? 'text-cyan-200' : 'text-slate-500 dark:text-slate-400'}`}>
+                    {isSelected ? 'Currently selected' : 'Select group'}
+                  </span>
                 </div>
               </div>
             );
@@ -689,7 +669,7 @@ export const GroupManagementView: React.FC<{
                     className="min-h-[44px] inline-flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer whitespace-nowrap"
                   >
                     <UserPlus className="w-3.5 h-3.5" />
-                    <span>Add Member</span>
+                    <span>Add roster member</span>
                   </button>
                   {showStoveFeatures && (
                     <button
@@ -1551,7 +1531,7 @@ export const GroupManagementView: React.FC<{
         isOpen={isAddingMember}
         onClose={() => setIsAddingMember(false)}
         title={`Add Member to ${currentGroup?.name || 'Group'}`}
-        subtitle="Add a member record or share the invite code so they can log in directly"
+        subtitle="Add a roster record, then share the group invite link so they can create or access their own account"
       >
         <form onSubmit={handleAddMember} className="space-y-4 text-xs">
           <div className="bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 rounded-xl p-3 text-slate-700 dark:text-slate-300">
@@ -1559,7 +1539,7 @@ export const GroupManagementView: React.FC<{
               <ShieldCheck className="w-3.5 h-3.5 text-[#D5A52B]" />
               Member Record
             </span>
-            Members added with their email can sign in and see their balance &amp; send payment proofs right away.
+            This adds the person to your group list for planning and record-keeping. It does not create a UnitSpot login or give them access to private group information. They must sign in and join using your group invite link or code.
           </div>
 
           {addMemberError && (
@@ -1613,22 +1593,11 @@ export const GroupManagementView: React.FC<{
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
-                Role in Group *
-              </label>
-              <select
-                value={newMemberRole}
-                onChange={(e) =>
-                  setNewMemberRole(e.target.value as 'admin' | 'treasurer' | 'member')
-                }
-                className="w-full min-h-[44px] bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
-              >
-                <option value="member">Member</option>
-                <option value="treasurer">Treasurer / Collector</option>
-                <option value="admin">Group Admin</option>
-              </select>
+              <div className="font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">Account access</div>
+              <div className="min-h-[44px] flex items-center rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#11192C] px-3 text-xs font-semibold text-slate-700 dark:text-slate-200">Roster only · Member</div>
+              <p className="mt-1 text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">Admin and treasurer access can only be assigned to a linked account.</p>
             </div>
 
             <div>
@@ -1820,96 +1789,35 @@ export const GroupManagementView: React.FC<{
         isOpen={Boolean(postCreatedGroup)}
         onClose={() => setPostCreateGroupId(null)}
         title={postCreatedGroup ? `Group Ready — ${postCreatedGroup.name}` : 'Group Created'}
-        subtitle="Invite members right away with your unique code or link"
+        subtitle="Your group is ready to use."
       >
-        {postCreatedGroup && (
-          <div className="space-y-4 text-xs">
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#11192C] border border-slate-200 dark:border-slate-800 space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                  Group Invite Code
-                </span>
-                {postCreatedGroup.inviteExpiresAt && (
-                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Valid until {new Date(postCreatedGroup.inviteExpiresAt).toLocaleDateString()}
-                  </span>
-                )}
-              </div>
-              <div className="font-mono text-lg font-extrabold text-slate-900 dark:text-white tracking-wider">
-                {postCreatedGroup.joinCode}
-              </div>
-              <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 break-all">
-                {buildInviteUrl(postCreatedGroup.joinCode)}
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => handleCopyInviteLink(postCreatedGroup.joinCode)}
-                className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white font-bold cursor-pointer"
-              >
-                <Link2 className="w-3.5 h-3.5" />
-                <span>{copiedInviteUrl ? 'Copied Link' : 'Copy Invite Link'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleShareInviteLink(postCreatedGroup)}
-                className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold cursor-pointer"
-              >
-                <Share2 className="w-3.5 h-3.5" />
-                <span>Share Link</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleCopy(postCreatedGroup.joinCode)}
-                className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-white dark:bg-[#11192C] border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 font-semibold cursor-pointer"
-              >
-                <Copy className="w-3.5 h-3.5" />
-                <span>{copiedCode === postCreatedGroup.joinCode ? 'Copied!' : 'Copy Code'}</span>
-              </button>
-            </div>
-
-            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPostCreateGroupId(null);
-                    setAddMemberError(null);
-                    setIsAddingMember(true);
-                  }}
-                  className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-[#131D33] text-slate-800 dark:text-slate-200 font-semibold cursor-pointer"
-                >
-                  <UserPlus className="w-3.5 h-3.5" />
-                  <span>Add Member Directly</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPostCreateGroupId(null);
-                    openEditGroup();
-                  }}
-                  className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-[#131D33] text-slate-800 dark:text-slate-200 font-semibold cursor-pointer"
-                >
-                  <Edit3 className="w-3.5 h-3.5" />
-                  <span>Group Settings</span>
-                </button>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setPostCreateGroupId(null);
-                  onNavigateDashboard?.();
-                }}
-                className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-slate-900 dark:bg-blue-600 text-white font-bold cursor-pointer"
-              >
-                <LayoutDashboard className="w-3.5 h-3.5" />
-                <span>Go to Dashboard</span>
-              </button>
-            </div>
+        <div className="space-y-4 text-sm">
+          <div className="rounded-2xl border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50 dark:bg-emerald-950/30 p-4">
+            <div className="font-bold text-emerald-900 dark:text-emerald-200">Your group has been created successfully.</div>
+            <p className="mt-1 text-xs leading-relaxed text-emerald-800 dark:text-emerald-300">
+              You can add people to the group roster and share the invitation from the Group Members page. Members must sign in with their own accounts to access private group information.
+            </p>
           </div>
-        )}
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setPostCreateGroupId(null);
+                onNavigateDashboard?.();
+              }}
+              className="min-h-[44px] px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-semibold cursor-pointer"
+            >
+              Go to Dashboard
+            </button>
+            <button
+              type="button"
+              onClick={() => setPostCreateGroupId(null)}
+              className="min-h-[44px] px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-blue-600 text-white font-bold cursor-pointer"
+            >
+              Continue to Group
+            </button>
+          </div>
+        </div>
       </Modal>
 
       {/* Accommodation-Only Electricity Stove Settings Modal */}

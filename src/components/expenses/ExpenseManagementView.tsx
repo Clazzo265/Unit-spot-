@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
-import { formatMWK, formatSignedMWK } from '../../utils/financialCalculations';
-import { toSafeIntMWK } from '../../utils/financialConfig';
+import { computeGroupFinancialSummary, formatMWK, formatSignedMWK } from '../../utils/financialCalculations';
 import {
   canManageGroupRole,
   canVerifyPaymentsRole,
@@ -25,7 +24,7 @@ import {
 export const ExpenseManagementView: React.FC<{
   onOpenRecordExpense: () => void;
 }> = ({ onOpenRecordExpense }) => {
-  const { expenses, payments, currentGroup, effectiveRole, approveExpense } = useApp();
+  const { expenses, payments, assignments, currentGroup, effectiveRole, approveExpense } = useApp();
   const { showToast } = useToast();
 
   const [filterCategory, setFilterCategory] = useState<string>('all');
@@ -41,14 +40,23 @@ export const ExpenseManagementView: React.FC<{
   const groupPayments = currentGroup
     ? payments.filter((p) => p.groupId === currentGroup.id)
     : payments;
+  const groupAssignments = currentGroup
+    ? assignments.filter((a) => a.groupId === currentGroup.id)
+    : assignments;
 
-  const totalVerifiedCollected = groupPayments
-    .filter((p) => p.verificationStatus === 'verified')
-    .reduce((sum, p) => sum + toSafeIntMWK(p.amountReceived), 0);
-
-  const approvedExpenses = groupExpenses.filter((e) => e.status === 'approved');
-  const totalSpent = approvedExpenses.reduce((sum, e) => sum + toSafeIntMWK(e.amount), 0);
-  const remainingFunds = totalVerifiedCollected - totalSpent;
+  // Shared reconciliation keeps verified inflows and approved spending consistent
+  // across the dashboard, expenses and reports.
+  const approvedExpenseTotal = groupExpenses
+    .filter((expense) => expense.status === 'approved')
+    .reduce((sum, expense) => sum + Math.max(0, Math.round(Number(expense.amount) || 0)), 0);
+  const financialSummary = computeGroupFinancialSummary(
+    groupAssignments,
+    groupPayments,
+    approvedExpenseTotal
+  );
+  const totalVerifiedCollected = financialSummary.totalVerified;
+  const totalSpent = financialSummary.totalExpensesApproved;
+  const remainingFunds = financialSummary.remainingGroupFunds;
 
   const filteredExpenses = groupExpenses.filter((e) => {
     if (filterCategory === 'all') return true;
