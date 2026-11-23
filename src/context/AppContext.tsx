@@ -3200,7 +3200,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addMemberRecord: AppContextType['addMemberRecord'] = (params) => {
     if (!currentGroup) return { success: false, error: 'No active group selected.' };
     if (!currentUser || !canManageGroupRole(getRoleForGroupId(currentGroup.id))) {
-      return { success: false, error: 'Only administrators may register new members.' };
+      return { success: false, error: 'Only group administrators and authorised treasurers may register roster entries.' };
+    }
+
+    // A roster-only record is not an authenticated account. Never grant privileged roles here.
+    if (params.role && params.role !== 'member') {
+      return { success: false, error: 'Roster entries can only be added as members. Invite the person to UnitSpot first, then assign an elevated role after their account is linked.' };
     }
 
     if (!validateEmailAddress(params.email)) {
