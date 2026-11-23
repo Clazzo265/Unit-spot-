@@ -509,17 +509,6 @@ export const GroupManagementView: React.FC<{
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {onOpenJoinGroup && (
-            <button
-              type="button"
-              onClick={onOpenJoinGroup}
-              className="min-h-[44px] inline-flex items-center justify-center gap-2 bg-white hover:bg-slate-50 dark:bg-[#131D33] dark:hover:bg-[#1A2744] text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 px-4 py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
-            >
-              <Link2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
-              <span>Join with Invite Code</span>
-            </button>
-          )}
-
           <button
             type="button"
             onClick={() => setIsCreating(true)}
@@ -569,8 +558,17 @@ export const GroupManagementView: React.FC<{
             return (
               <div
                 key={g.id}
+                role="button"
+                tabIndex={0}
+                aria-pressed={isSelected}
                 onClick={() => setCurrentGroup(g)}
-                className={`p-5 rounded-2xl border transition-all cursor-pointer relative ${
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setCurrentGroup(g);
+                  }
+                }}
+                className={`p-5 rounded-2xl border transition-all cursor-pointer relative focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 ${
                   isSelected
                     ? 'border-slate-900 dark:border-blue-500 bg-slate-900 dark:bg-[#131D33] text-white shadow-md ring-1 ring-slate-900 dark:ring-blue-500/60'
                     : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1424] hover:border-slate-300 dark:hover:border-slate-700 text-slate-900 dark:text-slate-100'
@@ -628,26 +626,9 @@ export const GroupManagementView: React.FC<{
                     <span>{membersCount} active members</span>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleCopy(g.joinCode);
-                    }}
-                    className={`min-h-[36px] inline-flex items-center gap-1 font-mono text-[11px] px-2.5 py-1 rounded-lg border cursor-pointer ${
-                      isSelected
-                        ? 'border-white/20 bg-white/10 text-white hover:bg-white/20'
-                        : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#11192C] text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#18233D]'
-                    }`}
-                    title="Click to copy group code"
-                  >
-                    {copiedCode === g.joinCode ? (
-                      <Check className="w-3 h-3 text-emerald-400" />
-                    ) : (
-                      <Copy className="w-3 h-3" />
-                    )}
-                    {g.joinCode}
-                  </button>
+                  <span className={`text-[11px] font-semibold ${isSelected ? 'text-cyan-200' : 'text-slate-500 dark:text-slate-400'}`}>
+                    {isSelected ? 'Currently selected' : 'Select group'}
+                  </span>
                 </div>
               </div>
             );
@@ -688,7 +669,7 @@ export const GroupManagementView: React.FC<{
                     className="min-h-[44px] inline-flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer whitespace-nowrap"
                   >
                     <UserPlus className="w-3.5 h-3.5" />
-                    <span>Add Member</span>
+                    <span>Add roster member</span>
                   </button>
                   {showStoveFeatures && (
                     <button
@@ -1558,7 +1539,7 @@ export const GroupManagementView: React.FC<{
               <ShieldCheck className="w-3.5 h-3.5 text-[#D5A52B]" />
               Member Record
             </span>
-            This creates a group roster record only — it does not create an account or grant access. To use UnitSpot, the person must sign in with their own account and join using your group invite link or code.
+            This adds the person to your group list for planning and record-keeping. It does not create a UnitSpot login or give them access to private group information. They must sign in and join using your group invite link or code.
           </div>
 
           {addMemberError && (
@@ -1870,7 +1851,7 @@ export const GroupManagementView: React.FC<{
                   className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-[#131D33] text-slate-800 dark:text-slate-200 font-semibold cursor-pointer"
                 >
                   <UserPlus className="w-3.5 h-3.5" />
-                  <span>Add Member Directly</span>
+                  <span>Add roster member</span>
                 </button>
                 <button
                   type="button"
