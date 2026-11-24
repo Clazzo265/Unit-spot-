@@ -32,6 +32,16 @@ npx tsx --test src/utils/*.test.ts
 
 Email/password and Google sign-in must be enabled in Firebase Authentication, and `email_verified` is enforced by `firestore.rules` and `storage.rules`.
 
+## Invite link flow
+
+When an admin shares a `?join=CODE` link:
+
+1. The invited person lands on a simplified sign-in screen showing the saved invite code and two choices: **Continue with Google** or email (new users are taken to **Create account & join** by default).
+2. After Google sign-in or email sign-up/email verification, `AutoJoinInvite` finishes the join automatically — no need to copy or re-enter the code.
+3. If the code is invalid, expired, or revoked, the normal Join Group dialog opens so the user can correct it.
+
+For `admin_approval` groups, the user sees a “request sent” confirmation instead of immediate membership.
+
 ## Deploying to GitHub Pages
 
 The workflow at `.github/workflows/deploy-pages.yml` builds and publishes the site automatically.
