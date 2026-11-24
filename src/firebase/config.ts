@@ -88,6 +88,9 @@ export async function resendVerificationEmail(): Promise<void> {
 export async function reloadCurrentUser(): Promise<FirebaseUser | null> {
   if (!auth.currentUser) return null;
   await auth.currentUser.reload();
+  // Firestore security rules read email_verified from the ID token, which is
+  // cached until expiry. Force a refresh so a just-verified account can write.
+  await auth.currentUser.getIdToken(true);
   return auth.currentUser;
 }
 

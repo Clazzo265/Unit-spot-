@@ -2902,6 +2902,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, error: 'Please verify your email address before joining a group.' };
     }
 
+    // Ensure Firestore sees the current email_verified claim, not a cached token.
+    try {
+      await auth.currentUser?.getIdToken(true);
+    } catch {
+      // The batch below will report a precise error if the token cannot refresh.
+    }
+
     const lookup = await lookupInviteByCode(code);
     if (!lookup.success || !lookup.data) {
       return { success: false, error: lookup.error || 'Invalid invite code.' };
@@ -3003,11 +3010,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setGroups((prev) => mergeItemsById(prev, [joinedGroup]));
         setCurrentGroup(joinedGroup);
       }
-    } catch (err) {
+    } catch (err: any) {
+      const code = typeof err?.code === 'string' ? err.code : '';
       console.warn('Firestore auto-join failed:', err);
       return {
         success: false,
-        error: 'Could not complete group join right now. Check your internet connection or ask your admin.',
+        error: code
+          ? `Could not join this group (${code}). ${err?.message || ''} If you just verified your email, sign out and back in once, or ask the admin to regenerate the invite link.`
+          : 'Could not complete group join right now. Check your internet connection or ask your admin.',
       };
     }
 

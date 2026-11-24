@@ -42,6 +42,8 @@ When an admin shares a `?join=CODE` link:
 
 For `admin_approval` groups, the user sees a “request sent” confirmation instead of immediate membership.
 
+If joining fails, the error now includes the Firebase error code (for example `permission-denied`). A common cause is a stale ID token right after email verification; the app now force-refreshes the token before the join batch and when the “I have verified” button is used.
+
 ## Deploying to GitHub Pages
 
 The workflow at `.github/workflows/deploy-pages.yml` builds and publishes the site automatically.
