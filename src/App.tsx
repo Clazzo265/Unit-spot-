@@ -497,9 +497,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#F6F8FC] dark:bg-[#070B14] text-slate-900 dark:text-slate-100 flex flex-col md:flex-row antialiased transition-colors">
       {/* Finish invite links automatically once a verified session exists. */}
-      {pendingInviteCode && (
-        <AutoJoinInvite onError={() => setIsJoinModalOpen(true)} />
-      )}
+      {pendingInviteCode && <AutoJoinInvite />}
 
       {/* Desktop Left Sidebar */}
       <aside className="no-print hidden md:flex flex-col w-64 bg-white dark:bg-[#0B1120] border-r border-slate-200 dark:border-slate-800/80 p-4 shrink-0 justify-between select-none">

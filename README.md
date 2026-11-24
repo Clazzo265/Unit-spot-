@@ -60,7 +60,7 @@ The workflow sets `VITE_BASE_PATH=/Unit-spot-/`, which `vite.config.ts` uses for
 - Add the same domain to the OAuth redirect domains for Google sign-in. Firebase normally manages this automatically once the domain is authorized.
 - Enable **Google** under **Authentication → Sign-in method** if it is not already enabled.
 - If the browser blocks the popup, allow popups for the site; the error banner now distinguishes that case from domain/OAuth misconfiguration.
-- Deploy `firestore.rules` and `storage.rules` to the Firebase project referenced by `firebase-applet-config.json`. There is currently no `firebase.json` or deployment script for rules, so the repository copies and the live rules must be kept in sync manually.
+- Deploy `firestore.rules` and `storage.rules` to the Firebase project referenced by `firebase-applet-config.json`. A `firebase.json` and `.github/workflows/deploy-firebase-rules.yml` are provided for this. Add repository secrets `FIREBASE_PROJECT_ID` and `FIREBASE_TOKEN` (from `firebase login:ci`), then run the **Deploy Firebase Rules** workflow. A `permission-denied` during auto-join usually means the live rules are older than these files.
 
 ## Deployment notes
 
