@@ -9,6 +9,7 @@ import {
   EmailVerificationGate,
   JoinGroupModal,
 } from './components/auth/AuthOnboardingModal';
+import { AutoJoinInvite } from './components/auth/AutoJoinInvite';
 import {
   canManageGroupRole,
   canVerifyPaymentsRole,
@@ -194,13 +195,6 @@ export default function App() {
       setViewMode('app');
     }
   }, [authStatus, firebaseAuthUser]);
-
-  // Auto-open Join Group modal if user arrived with ?join=CODE and is now signed in & verified
-  useEffect(() => {
-    if (firebaseAuthUser && isEmailVerified && pendingInviteCode && viewMode === 'app') {
-      setIsJoinModalOpen(true);
-    }
-  }, [firebaseAuthUser, isEmailVerified, pendingInviteCode, viewMode]);
 
   // Close mobile drawer on Escape
   useEffect(() => {
@@ -502,6 +496,9 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F6F8FC] dark:bg-[#070B14] text-slate-900 dark:text-slate-100 flex flex-col md:flex-row antialiased transition-colors">
+      {/* Finish invite links automatically once a verified session exists. */}
+      {pendingInviteCode && <AutoJoinInvite />}
+
       {/* Desktop Left Sidebar */}
       <aside className="no-print hidden md:flex flex-col w-64 bg-white dark:bg-[#0B1120] border-r border-slate-200 dark:border-slate-800/80 p-4 shrink-0 justify-between select-none">
         <div className="space-y-5">

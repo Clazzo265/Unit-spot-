@@ -206,6 +206,10 @@ describe('UNIT SPOT Multi-Group, Member Role, Invite & Non-Accommodation Workflo
     const code = generateJoinCode('US');
     const url = buildInviteUrl(code, 'https://unitspot.example');
     assert.equal(extractInviteCodeFromUrl(url), code);
+    assert.equal(
+      buildInviteUrl(code, 'https://unitspot.example', '/Unit-spot-'),
+      `https://unitspot.example/Unit-spot-/?join=${code}`
+    );
     assert.equal(extractInviteCodeFromUrl('#group=grp_1&code=us-demo-99'), 'US-DEMO-99');
 
     const en = getLocaleStrings('en');

@@ -5,6 +5,9 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    // GitHub Pages serves the app from /<repo-name>/. Local dev stays at /.
+    // Set VITE_BASE_PATH in CI (see .github/workflows/deploy-pages.yml).
+    base: process.env.VITE_BASE_PATH || '/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
@@ -30,6 +33,8 @@ export default defineConfig(() => {
       },
     },
     server: {
+      // Allow the Arena live-preview proxy host to reach the dev server.
+      allowedHosts: ['.e2b.app'],
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',

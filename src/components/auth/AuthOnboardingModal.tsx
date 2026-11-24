@@ -48,10 +48,16 @@ export const AuthOnboardingCard: React.FC<AuthPanelProps> = ({
   } = useApp();
   const { showToast } = useToast();
 
+  // Arriving from a shared ?join=CODE link: hide the create/join chooser and
+  // make the next action simply "continue with Google or email".
+  const isInviteLink = Boolean(pendingInviteCode);
+
   const [intent, setIntent] = useState<'create' | 'join'>(
     initialIntent || (pendingInviteCode ? 'join' : 'create')
   );
-  const [authTab, setAuthTab] = useState<'signin' | 'signup' | 'reset'>('signin');
+  const [authTab, setAuthTab] = useState<'signin' | 'signup' | 'reset'>(
+    pendingInviteCode ? 'signup' : 'signin'
+  );
   const [inviteCodeInput, setInviteCodeInput] = useState(pendingInviteCode || '');
   const [invitePreview, setInvitePreview] = useState<GroupInvite | null>(null);
   const [inviteLookupError, setInviteLookupError] = useState<string | null>(null);
@@ -165,12 +171,16 @@ export const AuthOnboardingCard: React.FC<AuthPanelProps> = ({
               : strings.auth.signInTitle}
         </h1>
         <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-          {intent === 'join'
-            ? 'Join your group with an invite code to track your contributions, upload receipts, and check shared expenses.'
-            : 'Sign in to create a group, invite members with one link, track MWK contributions, and verify receipts.'}
+          {isInviteLink
+            ? 'You have been invited to a UNIT SPOT group. Continue with Google or your email below — we will add you to the group automatically.'
+            : intent === 'join'
+              ? 'Join your group with an invite code to track your contributions, upload receipts, and check shared expenses.'
+              : 'Sign in to create a group, invite members with one link, track MWK contributions, and verify receipts.'}
         </p>
       </div>
 
+      {!isInviteLink && (
+        <>
       {/* Dual Intent Selector */}
       <div className="grid grid-cols-2 gap-2.5" role="group" aria-label="Choose how you want to start">
         <button
@@ -278,6 +288,22 @@ export const AuthOnboardingCard: React.FC<AuthPanelProps> = ({
               <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
             </div>
           )}
+        </div>
+      )}
+
+        </>
+      )}
+
+      {isInviteLink && (
+        <div className="bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-2xl p-3.5 space-y-1.5">
+          <div className="flex items-center gap-2 text-emerald-900 dark:text-emerald-100 font-bold text-xs">
+            <Users className="w-4 h-4 shrink-0" />
+            <span>Your group invite is ready</span>
+          </div>
+          <p className="text-[11px] text-emerald-800 dark:text-emerald-300 leading-relaxed">
+            Code <span className="font-mono font-bold">{pendingInviteCode}</span> was saved from the
+            link your admin shared. Pick Google or email below and you will join automatically.
+          </p>
         </div>
       )}
 
@@ -494,11 +520,15 @@ export const AuthOnboardingCard: React.FC<AuthPanelProps> = ({
           <span>
             {submitting
               ? 'Please wait...'
-              : authTab === 'signup'
-                ? strings.auth.signUp
-                : authTab === 'reset'
-                  ? 'Send Password Reset Email'
-                  : strings.auth.signIn}
+              : authTab === 'reset'
+                ? 'Send Password Reset Email'
+                : isInviteLink
+                  ? authTab === 'signup'
+                    ? 'Create account & join'
+                    : 'Sign in & join'
+                  : authTab === 'signup'
+                    ? strings.auth.signUp
+                    : strings.auth.signIn}
           </span>
           <ArrowRight className="w-4 h-4" />
         </button>
@@ -546,7 +576,9 @@ export const AuthOnboardingCard: React.FC<AuthPanelProps> = ({
             d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
           />
         </svg>
-        <span>{strings.auth.continueWithGoogle}</span>
+        <span>
+          {isInviteLink ? 'Continue with Google to join' : strings.auth.continueWithGoogle}
+        </span>
       </button>
     </div>
   );

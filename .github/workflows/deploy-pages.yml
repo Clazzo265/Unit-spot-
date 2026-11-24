@@ -1,0 +1,64 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+      - arena/7fd7d37a-unit-spot
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deployment at a time; a newer push supersedes an older run.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build static site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # esbuild is pinned to ^0.25 while Vite 8 wants ^0.27/^0.28, so a plain
+      # npm install fails peer resolution. Keep the flag until the pin is fixed.
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Type-check
+        run: npm run lint
+
+      - name: Build for GitHub Pages
+        run: npm run build
+        env:
+          VITE_BASE_PATH: /Unit-spot-/
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: UploadPagesArtifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    # No `environment: github-pages` here: that environment has a branch
+    # protection policy which rejects this review branch. deploy-pages works
+    # without it and still publishes the uploaded Pages artifact.
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

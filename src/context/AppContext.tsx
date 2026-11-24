@@ -107,6 +107,7 @@ import {
   arrayUnion,
   arrayRemove,
   increment,
+  updateDoc,
   deleteField,
   writeBatch,
 } from 'firebase/firestore';
@@ -496,7 +497,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       docId: string,
       data: Record<string, unknown>,
       op: OperationType = OperationType.WRITE,
-      onRejected?: () => void
+      onRejected?: () => void,
+      silent?: boolean
     ): Promise<void> => {
       const expectedUid = firebaseAuthUser?.uid;
       if (!expectedUid || activeUidRef.current !== expectedUid) return;
@@ -521,11 +523,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           handleFirestoreError(err, op, `${path}/${docId}`);
         } catch (wrapped) {
           console.warn(wrapped);
-          setActionError(
-            offlineNow
-              ? 'You are offline. Changes are saved locally and queued.'
-              : formatFriendlyFirestoreError(err, Boolean(onRejected))
-          );
+          if (!silent) {
+            setActionError(
+              offlineNow
+                ? 'You are offline. Changes are saved locally and queued.'
+                : formatFriendlyFirestoreError(err, Boolean(onRejected))
+            );
+          }
         }
       }
     },
@@ -1151,9 +1155,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       await signInWithPopup(auth, googleProvider);
       return true;
-    } catch (error) {
+    } catch (error: any) {
+      const code = typeof error?.code === 'string' ? error.code : '';
       console.error('Google Sign In failed:', error);
-      setAuthError('Google Sign-In could not be completed. Please allow popups and try again.');
+      const messages: Record<string, string> = {
+        'auth/unauthorized-domain':
+          'This site is not an authorized Firebase Auth domain. Add clazzo265.github.io to Firebase Authentication → Settings → Authorized domains, then try again.',
+        'auth/popup-blocked':
+          'Your browser blocked the sign-in popup. Allow popups for this site and try again.',
+        'auth/popup-closed-by-user': 'Google sign-in was cancelled.',
+        'auth/cancelled-popup-request': 'Another sign-in window is already open. Please close it and try again.',
+        'auth/operation-not-allowed':
+          'Google sign-in is not enabled for this Firebase project. Enable it in Firebase Authentication → Sign-in method.',
+        'auth/network-request-failed':
+          'Could not reach Google/Firebase. Check your connection and try again.',
+        'auth/invalid-api-key':
+          'Firebase configuration is invalid. Check firebase-applet-config.json.',
+      };
+      setAuthError(
+        messages[code] ||
+          (code
+            ? `Google Sign-In failed (${code}). ${error?.message || 'Please try again.'}`
+            : 'Google Sign-In could not be completed. Please check the browser console and try again.')
+      );
       return false;
     }
   };
@@ -1357,7 +1381,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           `users/${resolvedUid}/notifications`,
           newNotif.id,
           newNotif as unknown as Record<string, unknown>,
-          OperationType.CREATE
+          OperationType.CREATE,
+          undefined,
+          true
         );
       }
     },
@@ -2882,6 +2908,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, error: 'Please verify your email address before joining a group.' };
     }
 
+    // Ensure Firestore sees the current email_verified claim, not a cached token.
+    try {
+      await auth.currentUser?.getIdToken(true);
+    } catch {
+      // The batch below will report a precise error if the token cannot refresh.
+    }
+
     const lookup = await lookupInviteByCode(code);
     if (!lookup.success || !lookup.data) {
       return { success: false, error: lookup.error || 'Invalid invite code.' };
@@ -2933,7 +2966,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     }
 
-    // Auto-join via code (atomic writeBatch required by Firestore inviteCodeUsed/getAfter rules)
+    // Auto-join via code. Write the member record first, then add the UID to the
+    // group. The rules validate the committed member record, so no getAfter()
+    // batch dependency is needed. A retry safely skips completed steps.
     const joiningUid = firebaseAuthUser.uid;
     const newMember: GroupMember = {
       id: joiningUid,
@@ -2957,24 +2992,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updatedAt: nowIso,
     };
 
+    let joinStage = 'preparing membership';
     try {
-      const batch = writeBatch(db);
-      batch.set(
-        doc(db, `groups/${invite.groupId}/members`, joiningUid),
-        sanitizeForFirestore(newMember as unknown as Record<string, unknown>)
-      );
-      batch.update(doc(db, 'groups', invite.groupId), {
-        memberUids: arrayUnion(joiningUid),
-        memberCount: increment(1),
-        updatedAt: nowIso,
-      });
-      await batch.commit();
+      const groupRef = doc(db, 'groups', invite.groupId);
+      const memberRef = doc(db, `groups/${invite.groupId}/members`, joiningUid);
 
+      const [groupSnap, memberSnap] = await Promise.all([
+        getDoc(groupRef),
+        getDoc(memberRef),
+      ]);
+      if (!groupSnap.exists()) {
+        return { success: false, error: 'This group no longer exists. Ask your admin for a new invite.' };
+      }
       if (activeUidRef.current !== joiningUid) {
         return { success: false, error: 'Session changed while joining group.' };
       }
 
-      const joinedSnap = await getDoc(doc(db, 'groups', invite.groupId));
+      const existingMember = memberSnap.exists()
+        ? (memberSnap.data() as Partial<GroupMember>)
+        : null;
+      if (!existingMember || existingMember.userId !== joiningUid || existingMember.status !== 'active') {
+        joinStage = 'creating membership record';
+        await setDoc(memberRef, sanitizeForFirestore(newMember as unknown as Record<string, unknown>));
+      }
+
+      const groupData = groupSnap.data() as Group;
+      const memberUids = Array.isArray(groupData.memberUids) ? groupData.memberUids : [];
+      if (!memberUids.includes(joiningUid)) {
+        joinStage = 'adding you to the group';
+        await updateDoc(groupRef, {
+          memberUids: arrayUnion(joiningUid),
+          memberCount: increment(1),
+          updatedAt: nowIso,
+        });
+      }
+
+      joinStage = 'confirming membership';
+      if (activeUidRef.current !== joiningUid) {
+        return { success: false, error: 'Session changed while joining group.' };
+      }
+
+      const joinedSnap = await getDoc(groupRef);
       if (activeUidRef.current !== joiningUid) {
         return { success: false, error: 'Session changed while joining group.' };
       }
@@ -2983,11 +3041,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setGroups((prev) => mergeItemsById(prev, [joinedGroup]));
         setCurrentGroup(joinedGroup);
       }
-    } catch (err) {
+    } catch (err: any) {
+      const code = typeof err?.code === 'string' ? err.code : '';
       console.warn('Firestore auto-join failed:', err);
       return {
         success: false,
-        error: 'Could not complete group join right now. Check your internet connection or ask your admin.',
+        error: code
+          ? `Could not join this group while ${joinStage} (${code}). Check your connection and tap Try again. If it continues, send this message to your admin.`
+          : `Could not complete group join right now while ${joinStage}. Check your internet connection and try again.`,
       };
     }
 

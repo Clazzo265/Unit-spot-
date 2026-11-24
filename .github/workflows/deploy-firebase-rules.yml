@@ -1,0 +1,57 @@
+name: Deploy Firestore Rules
+
+on:
+  push:
+    branches:
+      - main
+      - arena/7fd7d37a-unit-spot
+    paths:
+      - firestore.rules
+      - storage.rules
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firebase-rules
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy Firestore rules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Deploy rules
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: |
+          missing=0
+          if [ -z "$FIREBASE_PROJECT_ID" ]; then echo "Missing secret: FIREBASE_PROJECT_ID"; missing=1; fi
+          if [ -z "$FIREBASE_TOKEN" ]; then echo "Missing secret: FIREBASE_TOKEN"; missing=1; fi
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+          set +e
+          output=$(npx --yes firebase-tools@latest deploy \
+            --only firestore \
+            --project "$FIREBASE_PROJECT_ID" \
+            --token "$FIREBASE_TOKEN" \
+            --non-interactive 2>&1)
+          status=$?
+          printf '%s\n' "$output"
+          if [ "$status" -ne 0 ]; then
+            summary=$(printf '%s\n' "$output" | grep -i -E 'error|failed|denied|permission|invalid|not found|unauthor|auth|rules|database|bucket' | tail -n 12 | tr '\n' ' ' | cut -c1-700)
+            if [ -z "$summary" ]; then
+              summary=$(printf '%s\n' "$output" | tail -n 25 | tr '\n' ' ' | cut -c1-700)
+            fi
+            echo "::error::$summary"
+            exit "$status"
+          fi
