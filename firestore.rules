@@ -892,3 +892,5 @@ service cloud.firestore {
     }
   }
 }
+
+// Managed in this repository; deployed by .github/workflows/deploy-firebase-rules.yml
