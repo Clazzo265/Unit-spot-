@@ -107,6 +107,7 @@ import {
   arrayUnion,
   arrayRemove,
   increment,
+  updateDoc,
   deleteField,
   writeBatch,
 } from 'firebase/firestore';
@@ -2965,7 +2966,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     }
 
-    // Auto-join via code (atomic writeBatch required by Firestore inviteCodeUsed/getAfter rules)
+    // Auto-join via code. Write the member record first, then add the UID to the
+    // group. The rules validate the committed member record, so no getAfter()
+    // batch dependency is needed. A retry safely skips completed steps.
     const joiningUid = firebaseAuthUser.uid;
     const newMember: GroupMember = {
       id: joiningUid,
@@ -2990,23 +2993,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     try {
-      const batch = writeBatch(db);
-      batch.set(
-        doc(db, `groups/${invite.groupId}/members`, joiningUid),
-        sanitizeForFirestore(newMember as unknown as Record<string, unknown>)
-      );
-      batch.update(doc(db, 'groups', invite.groupId), {
-        memberUids: arrayUnion(joiningUid),
-        memberCount: increment(1),
-        updatedAt: nowIso,
-      });
-      await batch.commit();
+      const groupRef = doc(db, 'groups', invite.groupId);
+      const memberRef = doc(db, `groups/${invite.groupId}/members`, joiningUid);
+
+      const [groupSnap, memberSnap] = await Promise.all([
+        getDoc(groupRef),
+        getDoc(memberRef),
+      ]);
+      if (!groupSnap.exists()) {
+        return { success: false, error: 'This group no longer exists. Ask your admin for a new invite.' };
+      }
+      if (activeUidRef.current !== joiningUid) {
+        return { success: false, error: 'Session changed while joining group.' };
+      }
+
+      const existingMember = memberSnap.exists()
+        ? (memberSnap.data() as Partial<GroupMember>)
+        : null;
+      if (!existingMember || existingMember.userId !== joiningUid || existingMember.status !== 'active') {
+        await setDoc(memberRef, sanitizeForFirestore(newMember as unknown as Record<string, unknown>));
+      }
+
+      const groupData = groupSnap.data() as Group;
+      const memberUids = Array.isArray(groupData.memberUids) ? groupData.memberUids : [];
+      if (!memberUids.includes(joiningUid)) {
+        await updateDoc(groupRef, {
+          memberUids: arrayUnion(joiningUid),
+          memberCount: increment(1),
+          updatedAt: nowIso,
+        });
+      }
 
       if (activeUidRef.current !== joiningUid) {
         return { success: false, error: 'Session changed while joining group.' };
       }
 
-      const joinedSnap = await getDoc(doc(db, 'groups', invite.groupId));
+      const joinedSnap = await getDoc(groupRef);
       if (activeUidRef.current !== joiningUid) {
         return { success: false, error: 'Session changed while joining group.' };
       }

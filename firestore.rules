@@ -62,18 +62,21 @@ service cloud.firestore {
              (!('expiresAtMs' in invite) || request.time.toMillis() < invite.expiresAtMs);
     }
 
-    // Self-join helpers use one get()/getAfter() each so the rule stays within
-    // Firestore's per-evaluation document-access limit.
-    function atomicSelfJoinInviteExists(groupId) {
-      let memberPath = /databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid);
-      return existsAfter(memberPath) &&
-             isValidId(getAfter(memberPath).data.inviteCodeUsed) &&
-             exists(invitePath(getAfter(memberPath).data.inviteCodeUsed));
+    // Self-join helpers read the committed member document. This avoids
+    // getAfter() batch dependencies, which were rejecting the join on some
+    // clients with permission-denied.
+    function selfJoinInviteCode(groupId) {
+      return memberDoc(groupId, request.auth.uid).inviteCodeUsed;
+    }
+
+    function selfJoinInviteExists(groupId) {
+      return memberDocExists(groupId, request.auth.uid) &&
+             isValidId(selfJoinInviteCode(groupId)) &&
+             exists(invitePath(selfJoinInviteCode(groupId)));
     }
 
     function isValidAtomicSelfJoin(groupId) {
-      let memberPath = /databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid);
-      let member = getAfter(memberPath).data;
+      let member = memberDoc(groupId, request.auth.uid);
       return member.userId == request.auth.uid &&
              member.status == 'active' &&
              member.roleInGroup == 'member' &&
@@ -576,7 +579,7 @@ service cloud.firestore {
                           !(request.auth.uid in existing().memberUids) &&
                           incoming().memberUids.hasAll(existing().memberUids)
                         )) &&
-                        atomicSelfJoinInviteExists(groupId) &&
+                        selfJoinInviteExists(groupId) &&
                         isValidAtomicSelfJoin(groupId)
                       ) ||
                       // Tier 4: Voluntary self-leave by non-admin active member (preserves group & ledger records)
@@ -648,8 +651,7 @@ service cloud.firestore {
                           ('inviteCodeUsed' in incoming()) &&
                           groupExists(groupId) &&
                           exists(invitePath(incoming().inviteCodeUsed)) &&
-                          isValidDirectSelfJoin(groupId, incoming().inviteCodeUsed) &&
-                          request.auth.uid in getAfter(/databases/$(database)/documents/groups/$(groupId)).data.memberUids
+                          isValidDirectSelfJoin(groupId, incoming().inviteCodeUsed)
                         )
                       );
         allow update: if isValidId(groupId) && isValidId(memberId) && isVerifiedAccount() &&
