@@ -48,6 +48,44 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/groups/$(groupId)/members/$(uid)).data;
     }
 
+    function invitePath(inviteCode) {
+      return /databases/$(database)/documents/groupInvites/$(inviteCode);
+    }
+
+    // Older invite documents may omit joinPolicy, revoked, or expiresAtMs.
+    // Treat those as the original permissive code_auto invite settings.
+    function isValidSelfJoinInvite(inviteCode, groupId) {
+      let invite = get(invitePath(inviteCode)).data;
+      return invite.groupId == groupId &&
+             invite.revoked != true &&
+             (!('joinPolicy' in invite) || invite.joinPolicy == 'code_auto') &&
+             (!('expiresAtMs' in invite) || request.time.toMillis() < invite.expiresAtMs);
+    }
+
+    // Self-join helpers use one get()/getAfter() each so the rule stays within
+    // Firestore's per-evaluation document-access limit.
+    function atomicSelfJoinInviteExists(groupId) {
+      let memberPath = /databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid);
+      return existsAfter(memberPath) &&
+             isValidId(getAfter(memberPath).data.inviteCodeUsed) &&
+             exists(invitePath(getAfter(memberPath).data.inviteCodeUsed));
+    }
+
+    function isValidAtomicSelfJoin(groupId) {
+      let memberPath = /databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid);
+      let member = getAfter(memberPath).data;
+      return member.userId == request.auth.uid &&
+             member.status == 'active' &&
+             member.roleInGroup == 'member' &&
+             isValidSelfJoinInvite(member.inviteCodeUsed, groupId);
+    }
+
+    function isValidDirectSelfJoin(groupId, inviteCode) {
+      let group = groupDoc(groupId);
+      return (!('status' in group) || group.status == 'active') &&
+             isValidSelfJoinInvite(inviteCode, groupId);
+    }
+
     // Strict active group membership check (revoked/suspended/removed members lose access immediately)
     function isActiveGroupMember(groupId) {
       return isSignedIn() && groupExists(groupId) && (
@@ -529,6 +567,7 @@ service cloud.firestore {
                       // joinCode copy on the group document.
                       (
                         isVerifiedAccount() &&
+                        existing().adminId != request.auth.uid &&
                         (!('status' in existing()) || existing().status == 'active') &&
                         incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberCount', 'updatedAt']) &&
                         ('memberUids' in incoming()) &&
@@ -537,17 +576,8 @@ service cloud.firestore {
                           !(request.auth.uid in existing().memberUids) &&
                           incoming().memberUids.hasAll(existing().memberUids)
                         )) &&
-                        existsAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)) &&
-                        getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.userId == request.auth.uid &&
-                        getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.status == 'active' &&
-                        getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.roleInGroup == 'member' &&
-                        'inviteCodeUsed' in getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data &&
-                        exists(/databases/$(database)/documents/groupInvites/$(getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed)) &&
-                        get(/databases/$(database)/documents/groupInvites/$(getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed)).data.groupId == groupId &&
-                        get(/databases/$(database)/documents/groupInvites/$(getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed)).data.revoked == false &&
-                        get(/databases/$(database)/documents/groupInvites/$(getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed)).data.joinPolicy == 'code_auto' &&
-                        (!('expiresAtMs' in get(/databases/$(database)/documents/groupInvites/$(getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed)).data) ||
-                         request.time.toMillis() < get(/databases/$(database)/documents/groupInvites/$(getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed)).data.expiresAtMs)
+                        atomicSelfJoinInviteExists(groupId) &&
+                        isValidAtomicSelfJoin(groupId)
                       ) ||
                       // Tier 4: Voluntary self-leave by non-admin active member (preserves group & ledger records)
                       (
@@ -617,13 +647,8 @@ service cloud.firestore {
                           incoming().status == 'active' &&
                           ('inviteCodeUsed' in incoming()) &&
                           groupExists(groupId) &&
-                          (!('status' in groupDoc(groupId)) || groupDoc(groupId).status == 'active') &&
-                          exists(/databases/$(database)/documents/groupInvites/$(incoming().inviteCodeUsed)) &&
-                          get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCodeUsed)).data.groupId == groupId &&
-                          get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCodeUsed)).data.revoked == false &&
-                          get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCodeUsed)).data.joinPolicy == 'code_auto' &&
-                          (!('expiresAtMs' in get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCodeUsed)).data) ||
-                           request.time.toMillis() < get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCodeUsed)).data.expiresAtMs) &&
+                          exists(invitePath(incoming().inviteCodeUsed)) &&
+                          isValidDirectSelfJoin(groupId, incoming().inviteCodeUsed) &&
                           request.auth.uid in getAfter(/databases/$(database)/documents/groups/$(groupId)).data.memberUids
                         )
                       );

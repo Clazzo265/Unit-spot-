@@ -496,7 +496,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       docId: string,
       data: Record<string, unknown>,
       op: OperationType = OperationType.WRITE,
-      onRejected?: () => void
+      onRejected?: () => void,
+      silent?: boolean
     ): Promise<void> => {
       const expectedUid = firebaseAuthUser?.uid;
       if (!expectedUid || activeUidRef.current !== expectedUid) return;
@@ -521,11 +522,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           handleFirestoreError(err, op, `${path}/${docId}`);
         } catch (wrapped) {
           console.warn(wrapped);
-          setActionError(
-            offlineNow
-              ? 'You are offline. Changes are saved locally and queued.'
-              : formatFriendlyFirestoreError(err, Boolean(onRejected))
-          );
+          if (!silent) {
+            setActionError(
+              offlineNow
+                ? 'You are offline. Changes are saved locally and queued.'
+                : formatFriendlyFirestoreError(err, Boolean(onRejected))
+            );
+          }
         }
       }
     },
@@ -1377,7 +1380,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           `users/${resolvedUid}/notifications`,
           newNotif.id,
           newNotif as unknown as Record<string, unknown>,
-          OperationType.CREATE
+          OperationType.CREATE,
+          undefined,
+          true
         );
       }
     },
