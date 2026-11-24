@@ -1,4 +1,4 @@
-name: Deploy Firebase Rules
+name: Deploy Firestore Rules
 
 on:
   push:
@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   deploy:
-    name: Deploy Firestore and Storage rules
+    name: Deploy Firestore rules
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
