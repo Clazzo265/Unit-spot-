@@ -39,8 +39,16 @@ jobs:
           if [ -z "$FIREBASE_PROJECT_ID" ]; then echo "Missing secret: FIREBASE_PROJECT_ID"; missing=1; fi
           if [ -z "$FIREBASE_TOKEN" ]; then echo "Missing secret: FIREBASE_TOKEN"; missing=1; fi
           if [ "$missing" -ne 0 ]; then exit 1; fi
-          npx --yes firebase-tools@latest deploy \
+          set +e
+          output=$(npx --yes firebase-tools@latest deploy \
             --only firestore,storage \
             --project "$FIREBASE_PROJECT_ID" \
             --token "$FIREBASE_TOKEN" \
-            --non-interactive
+            --non-interactive 2>&1)
+          status=$?
+          printf '%s\n' "$output"
+          if [ "$status" -ne 0 ]; then
+            summary=$(printf '%s\n' "$output" | tail -n 25 | tr '\n' ' ' | cut -c1-500)
+            echo "::error::$summary"
+            exit "$status"
+          fi
