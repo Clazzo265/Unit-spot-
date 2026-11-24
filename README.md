@@ -44,8 +44,10 @@ The workflow sets `VITE_BASE_PATH=/Unit-spot-/`, which `vite.config.ts` uses for
 
 ### Before sign-in works on GitHub Pages
 
-- Add `<owner>.github.io` to **Authentication → Settings → Authorized domains** in the Firebase console.
-- Add the same domain to the OAuth redirect domains for Google sign-in.
+- Add `<owner>.github.io` to **Authentication → Settings → Authorized domains** in the Firebase console. If it is missing, sign-in fails with `auth/unauthorized-domain` (older builds showed the misleading "Please allow popups" message for every error).
+- Add the same domain to the OAuth redirect domains for Google sign-in. Firebase normally manages this automatically once the domain is authorized.
+- Enable **Google** under **Authentication → Sign-in method** if it is not already enabled.
+- If the browser blocks the popup, allow popups for the site; the error banner now distinguishes that case from domain/OAuth misconfiguration.
 - Deploy `firestore.rules` and `storage.rules` to the Firebase project referenced by `firebase-applet-config.json`. There is currently no `firebase.json` or deployment script for rules, so the repository copies and the live rules must be kept in sync manually.
 
 ## Deployment notes

@@ -1151,9 +1151,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       await signInWithPopup(auth, googleProvider);
       return true;
-    } catch (error) {
+    } catch (error: any) {
+      const code = typeof error?.code === 'string' ? error.code : '';
       console.error('Google Sign In failed:', error);
-      setAuthError('Google Sign-In could not be completed. Please allow popups and try again.');
+      const messages: Record<string, string> = {
+        'auth/unauthorized-domain':
+          'This site is not an authorized Firebase Auth domain. Add clazzo265.github.io to Firebase Authentication → Settings → Authorized domains, then try again.',
+        'auth/popup-blocked':
+          'Your browser blocked the sign-in popup. Allow popups for this site and try again.',
+        'auth/popup-closed-by-user': 'Google sign-in was cancelled.',
+        'auth/cancelled-popup-request': 'Another sign-in window is already open. Please close it and try again.',
+        'auth/operation-not-allowed':
+          'Google sign-in is not enabled for this Firebase project. Enable it in Firebase Authentication → Sign-in method.',
+        'auth/network-request-failed':
+          'Could not reach Google/Firebase. Check your connection and try again.',
+        'auth/invalid-api-key':
+          'Firebase configuration is invalid. Check firebase-applet-config.json.',
+      };
+      setAuthError(
+        messages[code] ||
+          (code
+            ? `Google Sign-In failed (${code}). ${error?.message || 'Please try again.'}`
+            : 'Google Sign-In could not be completed. Please check the browser console and try again.')
+      );
       return false;
     }
   };
