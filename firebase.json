@@ -1,5 +1,6 @@
 {
   "firestore": {
+    "database": "ai-studio-klarency-3c2a1a2c-44c8-4b62-a9d7-a0f143ff43ec",
     "rules": "firestore.rules"
   },
   "storage": {
