@@ -41,7 +41,7 @@ jobs:
           if [ "$missing" -ne 0 ]; then exit 1; fi
           set +e
           output=$(npx --yes firebase-tools@latest deploy \
-            --only firestore,storage \
+            --only firestore \
             --project "$FIREBASE_PROJECT_ID" \
             --token "$FIREBASE_TOKEN" \
             --non-interactive 2>&1)
