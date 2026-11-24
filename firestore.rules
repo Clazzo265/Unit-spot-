@@ -524,29 +524,30 @@ service cloud.firestore {
                         isGroupManager(groupId) &&
                         incoming().adminId == existing().adminId
                       ) ||
-                      // Tier 3: Atomic self-join via verified active, non-expired group code_auto invite
+                      // Tier 3: Atomic self-join via a valid, unrevoked, unexpired code_auto invite.
+                      // Validate the invite document directly instead of relying on a possibly stale
+                      // joinCode copy on the group document.
                       (
-                        (!('joinPolicy' in existing()) || existing().joinPolicy == 'code_auto') &&
-                        (!('inviteRevoked' in existing()) || existing().inviteRevoked != true) &&
-                        (!('inviteExpiresAtMs' in existing()) || request.time.toMillis() < existing().inviteExpiresAtMs) &&
+                        isVerifiedAccount() &&
                         (!('status' in existing()) || existing().status == 'active') &&
                         incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberCount', 'updatedAt']) &&
                         ('memberUids' in incoming()) &&
                         request.auth.uid in incoming().memberUids &&
-                        (
-                          !('memberUids' in existing())
-                            ? incoming().memberUids == [request.auth.uid]
-                            : (
-                                !(request.auth.uid in existing().memberUids) &&
-                                incoming().memberUids.hasAll(existing().memberUids) &&
-                                incoming().memberUids.size() == existing().memberUids.size() + 1
-                              )
-                        ) &&
-                        (!('memberCount' in existing()) || incoming().memberCount == existing().memberCount + 1) &&
+                        (!('memberUids' in existing()) || (
+                          !(request.auth.uid in existing().memberUids) &&
+                          incoming().memberUids.hasAll(existing().memberUids)
+                        )) &&
                         existsAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)) &&
                         getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.userId == request.auth.uid &&
+                        getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.status == 'active' &&
                         getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.roleInGroup == 'member' &&
-                        getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed == existing().joinCode
+                        'inviteCodeUsed' in getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data &&
+                        exists(/databases/$(database)/documents/groupInvites/$(getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed)) &&
+                        get(/databases/$(database)/documents/groupInvites/$(getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed)).data.groupId == groupId &&
+                        get(/databases/$(database)/documents/groupInvites/$(getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed)).data.revoked == false &&
+                        get(/databases/$(database)/documents/groupInvites/$(getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed)).data.joinPolicy == 'code_auto' &&
+                        (!('expiresAtMs' in get(/databases/$(database)/documents/groupInvites/$(getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed)).data) ||
+                         request.time.toMillis() < get(/databases/$(database)/documents/groupInvites/$(getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.inviteCodeUsed)).data.expiresAtMs)
                       ) ||
                       // Tier 4: Voluntary self-leave by non-admin active member (preserves group & ledger records)
                       (
@@ -616,11 +617,13 @@ service cloud.firestore {
                           incoming().status == 'active' &&
                           ('inviteCodeUsed' in incoming()) &&
                           groupExists(groupId) &&
-                          (!('joinPolicy' in groupDoc(groupId)) || groupDoc(groupId).joinPolicy == 'code_auto') &&
-                          (!('inviteRevoked' in groupDoc(groupId)) || groupDoc(groupId).inviteRevoked != true) &&
-                          (!('inviteExpiresAtMs' in groupDoc(groupId)) || request.time.toMillis() < groupDoc(groupId).inviteExpiresAtMs) &&
                           (!('status' in groupDoc(groupId)) || groupDoc(groupId).status == 'active') &&
-                          incoming().inviteCodeUsed == groupDoc(groupId).joinCode &&
+                          exists(/databases/$(database)/documents/groupInvites/$(incoming().inviteCodeUsed)) &&
+                          get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCodeUsed)).data.groupId == groupId &&
+                          get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCodeUsed)).data.revoked == false &&
+                          get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCodeUsed)).data.joinPolicy == 'code_auto' &&
+                          (!('expiresAtMs' in get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCodeUsed)).data) ||
+                           request.time.toMillis() < get(/databases/$(database)/documents/groupInvites/$(incoming().inviteCodeUsed)).data.expiresAtMs) &&
                           request.auth.uid in getAfter(/databases/$(database)/documents/groups/$(groupId)).data.memberUids
                         )
                       );

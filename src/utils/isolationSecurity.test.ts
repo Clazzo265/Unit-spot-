@@ -325,7 +325,8 @@ describe('UNIT SPOT Security Remediation — User Data Isolation & Access Contro
     assert.match(firestoreRules, /match\s+\/disputes\/\{disputeId\}[\s\S]*?resource\.data\.memberUid\s*==\s*request\.auth\.uid/);
 
     // Invite join code & expiration verification on atomic join
-    assert.match(firestoreRules, /inviteCodeUsed\s*==\s*existing\(\)\.joinCode/);
+    assert.match(firestoreRules, /groupInvites\/\$\(getAfter\([^)]*\)\.data\.inviteCodeUsed\)/);
+    assert.match(firestoreRules, /groupInvites\/\$\(incoming\(\)\.inviteCodeUsed\)/);
     assert.match(firestoreRules, /inviteExpiresAtMs/);
     assert.match(firestoreRules, /expiresAtMs/);
     assert.match(firestoreRules, /request\.time\.toMillis\(\)\s*</);
