@@ -57,7 +57,7 @@ service cloud.firestore {
     function isValidSelfJoinInvite(inviteCode, groupId) {
       let invite = get(invitePath(inviteCode)).data;
       return invite.groupId == groupId &&
-             invite.revoked != true &&
+             (!('revoked' in invite) || invite.revoked != true) &&
              (!('joinPolicy' in invite) || invite.joinPolicy == 'code_auto') &&
              (!('expiresAtMs' in invite) || request.time.toMillis() < invite.expiresAtMs);
     }
@@ -66,7 +66,8 @@ service cloud.firestore {
     // getAfter() batch dependencies, which were rejecting the join on some
     // clients with permission-denied.
     function selfJoinInviteCode(groupId) {
-      return memberDoc(groupId, request.auth.uid).inviteCodeUsed;
+      let member = memberDoc(groupId, request.auth.uid);
+      return ('inviteCodeUsed' in member) ? member.inviteCodeUsed : '';
     }
 
     function selfJoinInviteExists(groupId) {
@@ -675,6 +676,16 @@ service cloud.firestore {
                           incoming().status == 'departed' &&
                           !(request.auth.uid in getAfter(/databases/$(database)/documents/groups/$(groupId)).data.memberUids) &&
                           getAfter(/databases/$(database)/documents/groups/$(groupId)).data.adminId != request.auth.uid
+                        ) ||
+                        (
+                          memberId == request.auth.uid &&
+                          incoming().userId == request.auth.uid &&
+                          incoming().roleInGroup == 'member' &&
+                          incoming().status == 'active' &&
+                          ('inviteCodeUsed' in incoming()) &&
+                          groupExists(groupId) &&
+                          exists(invitePath(incoming().inviteCodeUsed)) &&
+                          isValidDirectSelfJoin(groupId, incoming().inviteCodeUsed)
                         )
                       );
         allow delete: if false; // Preserve member directory & ledger integrity via soft status

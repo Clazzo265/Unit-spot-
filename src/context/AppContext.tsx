@@ -2992,6 +2992,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updatedAt: nowIso,
     };
 
+    let joinStage = 'preparing membership';
     try {
       const groupRef = doc(db, 'groups', invite.groupId);
       const memberRef = doc(db, `groups/${invite.groupId}/members`, joiningUid);
@@ -3011,12 +3012,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ? (memberSnap.data() as Partial<GroupMember>)
         : null;
       if (!existingMember || existingMember.userId !== joiningUid || existingMember.status !== 'active') {
+        joinStage = 'creating membership record';
         await setDoc(memberRef, sanitizeForFirestore(newMember as unknown as Record<string, unknown>));
       }
 
       const groupData = groupSnap.data() as Group;
       const memberUids = Array.isArray(groupData.memberUids) ? groupData.memberUids : [];
       if (!memberUids.includes(joiningUid)) {
+        joinStage = 'adding you to the group';
         await updateDoc(groupRef, {
           memberUids: arrayUnion(joiningUid),
           memberCount: increment(1),
@@ -3024,6 +3027,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
       }
 
+      joinStage = 'confirming membership';
       if (activeUidRef.current !== joiningUid) {
         return { success: false, error: 'Session changed while joining group.' };
       }
@@ -3043,8 +3047,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return {
         success: false,
         error: code
-          ? `Could not join this group (${code}). ${err?.message || ''} If you just verified your email, sign out and back in once, or ask the admin to regenerate the invite link.`
-          : 'Could not complete group join right now. Check your internet connection or ask your admin.',
+          ? `Could not join this group while ${joinStage} (${code}). Check your connection and tap Try again. If it continues, send this message to your admin.`
+          : `Could not complete group join right now while ${joinStage}. Check your internet connection and try again.`,
       };
     }
 
