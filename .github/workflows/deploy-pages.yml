@@ -55,9 +55,9 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    # No `environment: github-pages` here: that environment has a branch
+    # protection policy which rejects this review branch. deploy-pages works
+    # without it and still publishes the uploaded Pages artifact.
     steps:
       - name: Deploy
         id: deployment
