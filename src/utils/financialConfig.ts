@@ -445,12 +445,26 @@ export function generateJoinCode(prefix: string = 'US'): string {
   return `${prefix}-${token.slice(0, 5)}-${token.slice(5, 10)}`;
 }
 
-export function buildInviteUrl(joinCode: string, origin?: string): string {
+/**
+ * Build a shareable invite URL.
+ *
+ * GitHub Pages project sites are served from /<repo-name>/, not the domain root.
+ * Vite exposes that prefix as import.meta.env.BASE_URL, so include it here;
+ * otherwise invited members land on https://<owner>.github.io/?join=... and see
+ * GitHub's "There isn't a GitHub Pages site here" 404.
+ */
+export function buildInviteUrl(joinCode: string, origin?: string, pathBase?: string): string {
   const cleanCode = encodeURIComponent(joinCode.trim().toUpperCase());
   const base =
     origin ||
     (typeof window !== 'undefined' && window.location?.origin ? window.location.origin : '');
-  return base ? `${base}/?join=${cleanCode}` : `/?join=${cleanCode}`;
+
+  const runtimeBase = (import.meta.env?.BASE_URL || '').replace(/\/$/, '');
+  const rawBase = pathBase ?? runtimeBase;
+  const normalizedBase =
+    !rawBase || rawBase === '/' ? '' : rawBase.startsWith('/') ? rawBase : `/${rawBase}`;
+
+  return `${base}${normalizedBase}/?join=${cleanCode}`;
 }
 
 export function extractInviteCodeFromUrl(hrefOrSearch: string): string | null {

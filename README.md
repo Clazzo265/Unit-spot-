@@ -52,6 +52,7 @@ The workflow sets `VITE_BASE_PATH=/Unit-spot-/`, which `vite.config.ts` uses for
 
 ## Deployment notes
 
+- Invite links include the Vite base path, so shared links point to `/Unit-spot-/?join=...` instead of the domain root (which returns GitHub's "There isn't a GitHub Pages site here" 404).
 - `public/404.html` redirects unknown paths back to `index.html` while preserving `?join=` invite codes and hashes.
 - No secrets are needed for the Pages workflow itself; it uses the built-in `GITHUB_TOKEN` via `actions/deploy-pages`.
 - The `.env.example` file documents Gemini/AI Studio variables that the app does not currently use.
